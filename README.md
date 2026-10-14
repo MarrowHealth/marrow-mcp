@@ -174,7 +174,7 @@ the app. <https://marrowhealthapp.com/connect>
 
 ## Status
 
-Marrow is on the App Store (1.4), iOS 17+, and requires Apple Health.
+Marrow is on the App Store, iOS 17+, and requires Apple Health.
 [Get it on the App Store.](https://apps.apple.com/app/id6800819435)
 
 The iOS app is closed source; this server is not, because you should be able to
