@@ -1,6 +1,6 @@
 # marrow-mcp
 
-Give your AI agents read-only access to your own Apple Health data.
+Let your AI agents read your own Apple Health data.
 
 [Marrow](https://marrowhealthapp.com/) is a free iOS app that tracks 178
 health data series - 172 Apple Health types plus its own meal diary and
@@ -16,19 +16,39 @@ Nothing here talks to a cloud. Data flows phone → your machine, full stop.
 ## Run it
 
 ```sh
+pip install "marrow-mcp[qr]"                  # [qr] adds segno, which draws the pairing QR
+marrow-server --port 8800 --data ./data       # prints a pairing URL
+```
+
+Without `[qr]` the pairing page shows the pairing JSON instead of a code.
+
+or from a clone
+
+```sh
 python3 marrow_server.py                      # prints a pairing URL
 python3 marrow_server.py --port 8800 --data ./data
 ```
 
-or
+or with Docker
 
 ```sh
 docker compose up -d
 ```
 
-Open the pairing URL on any screen, then in Marrow: **Server → Pair with a
-server → scan**. From then on the app's background pushes keep the mirror
-current with the app closed.
+Open the pairing URL on any screen, then in Marrow: **Export, Server MCP,
+Pair with a server**, and scan. From then on the app's background pushes keep
+the mirror current with the app closed. The app pairs over plain http only on
+your own networks (a private or tailnet IPv4 address, a `.local` or `.ts.net`
+name, a short LAN name); a public address needs https (`--url https://...`).
+
+### Upgrading to 0.3.0
+
+Stop the old server and start the new one on the same `--data` directory.
+An existing `mirror.sqlite` gains the new columns on first start, and the
+tokens in `--data` carry over, so the phone stays paired. Sets logged by
+Marrow 1.4 carry a `set_type` (work,
+warmup, failure or drop). Warm-ups are still listed but no longer count toward
+volume or records, and rows mirrored before the upgrade read as work sets.
 
 ## Connect an agent
 
@@ -77,7 +97,11 @@ curl -s http://<server-ip>:8800/mcp \
 
 ## Tools
 
-All read-only. Nothing an agent can call writes to your health record.
+Nine tools, all of them reads. The server also carries write tools (log a
+meal, a workout and so on), but it lists them only after a phone registers it
+for write-back, and today only Marrow Connect does that. A self-hosted server
+paired from the app serves the nine reads and nothing an agent can call
+writes to your health record.
 
 | Tool | Returns |
 |---|---|
@@ -85,9 +109,16 @@ All read-only. Nothing an agent can call writes to your health record.
 | `list_metrics` | Every metric in the mirror, with units and coverage |
 | `metric_daily` | Daily values for any metric, up to 400 days |
 | `metric_samples` | Raw records with timestamps and source devices |
-| `workouts` | Workouts, including set-by-set strength detail |
+| `workouts` | Workouts from every source: activity, start, end, duration and source |
 | `nutrition_log` | The meal diary: every logged food with full nutrient detail, by day |
-| `strength_log` | Every lifting set with estimated 1RM, per-exercise progression, and volume per muscle group |
+| `strength_log` | Every lifting set with its set type and estimated 1RM, per-exercise progression, and volume per muscle group (warm-ups left out) |
+| `sleep_log` | One night per wake day: bedtime, wake time, hours asleep, minutes per stage |
+| `symptoms_and_mood` | Symptoms with their severity, and State of Mind entries with valence, feelings and what they were about |
+
+Metric keys: `list_metrics` shows Apple's short names (`active_energy_burned`),
+and the tools also accept the app's own keys (`active_energy`,
+`heart_rate_variability`), so an agent moved over from the phone keeps its
+vocabulary.
 
 Then ask your agent things like *"how did my sleep change once I started
 training in the mornings?"* and let it go and look.
@@ -110,20 +141,26 @@ config at the server URL with the bearer token, exactly as in the `mcp.json`
 block above. Reach it from outside the LAN with `tailscale serve --bg
 --https=8800 http://127.0.0.1:8800` and use the tailnet URL.
 
-## The other three ways in
+## The other ways in
 
-This server is one of four, and you do not need it to give agents access:
+This server is one of the doors on Marrow's Export tab, and you do not need it
+to give agents access:
 
-1. **On-device MCP.** Marrow runs the same MCP surface on the iPhone itself at
-   `http://<phone-ip>:21212/mcp`, answering while the app is running. Richest
-   data, zero extra hardware.
-2. **This server.** Always-on mirror on your own box.
-3. **Relay gateway.** Serves the mirror when the phone is asleep.
-4. **Manual files.** CSV, JSON and GPX out of the share sheet, plus scheduled
-   webhook pushes to any URL (Home Assistant, n8n, your own endpoint).
+1. **Local MCP.** Marrow runs an MCP server on the iPhone itself at
+   `http://<phone-ip>:21212/mcp`, answering while the app is running. Seven of
+   the nine tools above, zero extra hardware.
+2. **Server MCP.** This package: an always-on mirror on your own box.
+3. **Automated.** Scheduled pushes to any URL (Home Assistant, n8n, your own
+   endpoint).
+4. **Manual.** CSV, JSON and GPX files out of the share sheet.
 
 All four are in the free tier. Setup for all of them:
-<https://marrowhealthapp.com/mcp>.
+<https://marrowhealthapp.com/guides>.
+
+**Marrow Connect** is the hosted Pro path: Marrow runs the mirror, and
+ChatGPT, Claude or Gemini read it with the phone asleep and nothing to run.
+It is the only door that can log for you, once you turn on Allow AI write in
+the app. <https://marrowhealthapp.com/connect>
 
 ## Security
 
@@ -137,7 +174,7 @@ All four are in the free tier. Setup for all of them:
 
 ## Status
 
-Marrow is on the App Store (1.3.4), iOS 17+, and requires Apple Health.
+Marrow is on the App Store (1.4), iOS 17+, and requires Apple Health.
 [Get it on the App Store.](https://apps.apple.com/app/id6800819435)
 
 The iOS app is closed source; this server is not, because you should be able to

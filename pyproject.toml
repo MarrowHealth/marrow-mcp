@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "marrow-mcp"
-version = "0.2.5"
-description = "Self-hosted mirror and MCP server for Marrow, giving AI agents read-only access to your own Apple Health data"
+version = "0.3.0"
+description = "Self-hosted mirror and MCP server for Marrow: nine tools let AI agents read your own Apple Health data. Write tools appear only with Marrow Connect."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
@@ -18,8 +18,8 @@ classifiers = [
   "Programming Language :: Python :: 3",
   "Topic :: Scientific/Engineering :: Medical Science Apps.",
 ]
-# Standard library only. segno is optional and only draws the pairing QR in
-# the terminal; the pairing page renders one either way.
+# Standard library only. segno is optional and only draws the QR code on the
+# pairing page; without it the page shows the pairing JSON instead.
 dependencies = []
 
 [project.optional-dependencies]
