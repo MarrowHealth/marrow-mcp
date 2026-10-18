@@ -48,7 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = "0.3.0"
+__version__ = "0.3.1"
 
 PROTOCOL_VERSION = "2025-06-18"
 MAX_BODY = 32 * 1024 * 1024
@@ -1148,12 +1148,21 @@ class Mirror:
             if t in appetite:
                 return (["unspecified", "no change", "decreased", "increased"] + ["code %d" % c])[
                     c if 0 <= c <= 3 else 4]
-            words = ["unspecified", "not present", "mild", "moderate", "severe"]
+            # Apple's "unspecified" (0) is a symptom present with no
+            # severity; the Health app shows it as Present, and log_symptom
+            # writes it for "present", so it reads back as that word.
+            words = ["present", "not present", "mild", "moderate", "severe"]
             return words[c] if 0 <= c < len(words) else "code %d" % c
 
         def feeling(v):
             if v is None:
                 return "unknown"
+            # The seven values log_mood writes read back as the words it
+            # took (a write and the read after it must agree). Any other
+            # valence keeps the app's own scale (MoodSymptomExport.swift).
+            for word, x in MOOD_FEELINGS.items():
+                if abs(v - x) < 0.005:
+                    return word
             if v < -0.6: return "very unpleasant"
             if v < -0.2: return "unpleasant"
             if v < -0.05: return "slightly unpleasant"
@@ -1273,23 +1282,34 @@ class Mirror:
 
 TOOLS = [
     {"name": "health_summary",
-     "description": "Daily values for core metrics over recent days.",
+     "description": "A quick overview of the user's recent days, one value "
+                    "per day: steps, active calories, exercise minutes, "
+                    "resting heart rate, heart rate variability, body weight, "
+                    "calories eaten and hours asleep. Start here for \"how "
+                    "am I doing\" questions.",
      "inputSchema": {"type": "object", "properties": {
          "days": {"type": "integer",
                   "description": "Recent days (default 3, max 30)"}}}},
     {"name": "list_metrics",
-     "description": "Every metric in the mirror with units and coverage; "
-                    "use the 'key' values in the other tools.",
+     "description": "Every Apple Health metric synced from the user's "
+                    "iPhone, with its unit and the days it covers; pass a "
+                    "'key' from here to metric_daily or metric_samples.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "metric_daily",
-     "description": "Daily aggregated values for one metric.",
+     "description": "One metric as one value per day (a day's total for "
+                    "steps or calories, its average for heart rate and the "
+                    "like). Prefer this to metric_samples for trends and "
+                    "comparisons between days.",
      "inputSchema": {"type": "object", "properties": {
          "metric": {"type": "string", "description": "Metric key"},
          "days": {"type": "integer",
                   "description": "Days back (default 30, max 400)"}},
          "required": ["metric"]}},
     {"name": "metric_samples",
-     "description": "Raw records for one metric.",
+     "description": "The individual records behind one metric, each with "
+                    "its time, value and source app or device. Use it when "
+                    "the times of single readings matter; for daily totals "
+                    "use metric_daily.",
      "inputSchema": {"type": "object", "properties": {
          "metric": {"type": "string", "description": "Metric key"},
          "days": {"type": "integer", "description": "Days back (default 7)"},
@@ -1297,7 +1317,8 @@ TOOLS = [
                    "description": "Max records (default 200, max 1000)"}},
          "required": ["metric"]}},
     {"name": "workouts",
-     "description": "Workouts in the mirror (all sources).",
+     "description": "The user's workouts from Apple Health, from every app "
+                    "and device: activity, start, end and duration.",
      "inputSchema": {"type": "object", "properties": {
          "days": {"type": "integer", "description": "Days back (default 30)"}}}},
     {"name": "nutrition_log",
@@ -1322,8 +1343,8 @@ TOOLS = [
      "description": "Symptoms logged in the Health app with their severity in "
                     "words, and State of Mind entries (daily mood or momentary "
                     "emotion) with valence, feelings and what they were about. "
-                    "Use this for any question about symptoms, mood or mental "
-                    "state.",
+                    "Use this for questions about symptoms or mood the user "
+                    "logged in Apple Health or Marrow.",
      "inputSchema": {"type": "object", "properties": {
          "days": {"type": "integer",
                   "description": "Days back (default 30, max 400)"}}}},
@@ -1972,7 +1993,9 @@ def call_tool(mirror, name, args, client=None, on_queued=None):
     if name == "symptoms_and_mood":
         return mirror.symptoms_and_mood(clamp("days", 30, 400))
     if name in ("metric_daily", "metric_samples"):
-        t = mirror.resolve(args.get("metric", ""))
+        if args.get("metric") in (None, ""):
+            raise ValueError("metric is required: pass a key from list_metrics")
+        t = mirror.resolve(str(args["metric"]))
         if not t:
             raise ValueError(f"unknown metric: {args.get('metric')} "
                              "(see list_metrics)")
