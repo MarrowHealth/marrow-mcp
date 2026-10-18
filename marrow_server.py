@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Marrow self-hosted server — pair once, own your mirror, serve your agents.
+"""Marrow self-hosted server: pair once, own your mirror, serve your agents.
 
 One file, Python stdlib only. Run it on anything that stays on (Raspberry
 Pi, NAS, home server, old laptop):
@@ -13,16 +13,16 @@ What it does:
   - receives Marrow's background pushes (phone app can stay closed),
   - keeps a complete SQLite mirror of your verified health data,
   - serves it to AI agents over MCP (Claude, Cursor, any MCP client),
-    24/7 — this is the always-on companion to the app's on-device
+    24/7; this is the always-on companion to the app's on-device
     Live mode.
 
 Your data flows only from your phone to this machine. No cloud, no vendor,
 no telemetry. Put it behind HTTPS (tailscale serve, Caddy) if you want to
-reach it from outside your LAN — never port-forward it raw.
+reach it from outside your LAN; never port-forward it raw.
 
 Endpoints (app token via X-HealthBridge-Token; agents via Authorization:
-Bearer <mcp token> — two separate tokens, both auto-generated in --data):
-    GET  /pair     pairing page (QR) — open on a second screen, scan
+Bearer <mcp token>; two separate tokens, both auto-generated in --data):
+    GET  /pair     pairing page (QR); open on a second screen, scan
     POST /ping     pairing test
     POST /ingest   sample batches from the app (idempotent, uuid upsert)
     GET  /status   mirror summary
@@ -48,7 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = "0.3.1"
+__version__ = "0.3.2"
 
 PROTOCOL_VERSION = "2025-06-18"
 MAX_BODY = 32 * 1024 * 1024
@@ -353,7 +353,7 @@ def lan_ip():
 
 def local_strings(iso_utc, offset_s):
     """UTC instant -> device-local strings. The day must come from the
-    DEVICE's timezone — server-side days are the classic off-by-one."""
+    DEVICE's timezone; server-side days are the classic off-by-one."""
     dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
     dt = dt.astimezone(timezone(timedelta(seconds=offset_s)))
     return dt.strftime("%Y-%m-%d %H:%M:%S %z"), dt.strftime("%Y-%m-%d")
@@ -421,7 +421,7 @@ class Mirror:
                 or not all(isinstance(x, dict) for x in added)):
             raise ValueError("added/deleted must be lists (of objects)")
 
-        # Raw staging first — everything downstream is rebuildable.
+        # Raw staging first; everything downstream is rebuildable.
         stamp = datetime.now().strftime("%Y-%m-%d")
         if stamp != getattr(self, "_staging_day", None):
             self._staging_day = stamp
@@ -2036,7 +2036,7 @@ def pair_page(pairing):
 <h2>Pair Marrow with this server</h2>
 <p>On your iPhone: <b>Marrow → Export → Server MCP → Pair with a server</b>, then scan:</p>
 {qr}
-<p style="color:#666">Manual fallback — pairing JSON:</p>
+<p style="color:#666">Manual fallback, pairing JSON:</p>
 <pre style="background:#f4f4f2;padding:1em;overflow:auto">{info}</pre>
 </body>""".encode()
 
@@ -2169,7 +2169,7 @@ def make_handler(mirror, app_token, mcp_token, pairing):
                     result = {"protocolVersion": PROTOCOL_VERSION,
                               "capabilities": {"tools": {}},
                               "serverInfo": {"name": "marrow-selfhost",
-                                             "title": "Marrow (self-hosted)",
+                                             "title": "Marrow Health (self-hosted)",
                                              "version": __version__}}
                 elif method == "ping":
                     result = {}

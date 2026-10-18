@@ -1,4 +1,6 @@
-# marrow-mcp
+<img src="https://raw.githubusercontent.com/skeletonarmytech/marrow-mcp/main/mcpb/icon.png" alt="Marrow Health" width="72" align="left">
+
+# Marrow Health MCP server (`marrow-mcp`)
 
 Let your AI agents read your own Apple Health data.
 

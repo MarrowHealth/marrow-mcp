@@ -1,8 +1,8 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "tech.skeletonarmy/marrow",
-  "description": "Your own Apple Health data over MCP, from the free Marrow iOS app: nine reads, write-back on demand.",
-  "version": "0.3.1",
+  "description": "Marrow Health: your Apple Health data over MCP, from the free iOS app. Reads, and writes on demand.",
+  "version": "0.3.2",
   "repository": {
     "url": "https://github.com/skeletonarmytech/marrow-mcp",
     "source": "github"
@@ -12,7 +12,7 @@
     {
       "registryType": "pypi",
       "identifier": "marrow-mcp",
-      "version": "0.3.1",
+      "version": "0.3.2",
       "transport": {
         "type": "streamable-http",
         "url": "http://localhost:8800/mcp"
