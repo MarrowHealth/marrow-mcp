@@ -13,16 +13,16 @@ What it does:
   - receives Marrow's background pushes (phone app can stay closed),
   - keeps a complete SQLite mirror of your verified health data,
   - serves it to AI agents over MCP (Claude, Cursor, any MCP client),
-    24/7; this is the always-on companion to the app's on-device
+    24/7. This is the always-on companion to the app's on-device
     Live mode.
 
 Your data flows only from your phone to this machine. No cloud, no vendor,
 no telemetry. Put it behind HTTPS (tailscale serve, Caddy) if you want to
-reach it from outside your LAN; never port-forward it raw.
+reach it from outside your LAN. Never port-forward it raw.
 
-Endpoints (app token via X-HealthBridge-Token; agents via Authorization:
-Bearer <mcp token>; two separate tokens, both auto-generated in --data):
-    GET  /pair     pairing page (QR); open on a second screen, scan
+Endpoints (app token via X-HealthBridge-Token. Agents via Authorization:
+Bearer <mcp token>. Two separate tokens, both auto-generated in --data):
+    GET  /pair     pairing page (QR). Open on a second screen, scan
     POST /ping     pairing test
     POST /ingest   sample batches from the app (idempotent, uuid upsert)
     GET  /status   mirror summary
@@ -48,7 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = "0.3.2"
+__version__ = "0.3.3"
 
 PROTOCOL_VERSION = "2025-06-18"
 MAX_BODY = 32 * 1024 * 1024
@@ -233,7 +233,7 @@ SUM_HINTS = ("StepCount", "Distance", "FlightsClimbed", "EnergyBurned",
 # ---- write-back: an AI queues an entry, the phone applies it ----
 #
 # The phone stays the source of truth. A write tool only adds a row to
-# `inbox`; Marrow on the phone picks it up, logs it the way a manual entry
+# `inbox`. Marrow on the phone picks it up, logs it the way a manual entry
 # is logged (its own diary first, then Apple Health) and acknowledges.
 # Nothing here ever writes the `diary` table: the phone replaces a whole
 # diary day on every push, so a row written there would be wiped.
@@ -353,7 +353,7 @@ def lan_ip():
 
 def local_strings(iso_utc, offset_s):
     """UTC instant -> device-local strings. The day must come from the
-    DEVICE's timezone; server-side days are the classic off-by-one."""
+    DEVICE's timezone. Server-side days are the classic off-by-one."""
     dt = datetime.fromisoformat(iso_utc.replace("Z", "+00:00"))
     dt = dt.astimezone(timezone(timedelta(seconds=offset_s)))
     return dt.strftime("%Y-%m-%d %H:%M:%S %z"), dt.strftime("%Y-%m-%d")
@@ -380,7 +380,7 @@ class Mirror:
     STAGING_KEEP_DAYS = 30
 
     def _prune_staging(self):
-        """Raw pushes older than a month go; the tables hold the data and
+        """Raw pushes older than a month go. The tables hold the data and
         a day's file is only a replay aid, not an archive that grows forever."""
         floor = (datetime.now() - timedelta(days=self.STAGING_KEEP_DAYS)).strftime("%Y-%m-%d")
         for f in self.staging.glob("*.jsonl"):
@@ -390,7 +390,7 @@ class Mirror:
                 except OSError:
                     pass
 
-    # ---- ingest (Marrow push protocol; idempotent on uuid) ----
+    # ---- ingest (Marrow push protocol. Idempotent on uuid) ----
 
 
     def _add_columns(self, table, columns):
@@ -421,7 +421,7 @@ class Mirror:
                 or not all(isinstance(x, dict) for x in added)):
             raise ValueError("added/deleted must be lists (of objects)")
 
-        # Raw staging first; everything downstream is rebuildable.
+        # Raw staging first. Everything downstream is rebuildable.
         stamp = datetime.now().strftime("%Y-%m-%d")
         if stamp != getattr(self, "_staging_day", None):
             self._staging_day = stamp
@@ -570,7 +570,7 @@ class Mirror:
                 num = None
             elif stream.startswith("symptom_") and hk_type.startswith("HK"):
                 # Symptoms: the phone sends Apple's category value (severity
-                # scale) in `stage`; keep it as the number, not the duration.
+                # scale) in `stage`. Keep it as the number, not the duration.
                 row_type = hk_type
                 try:
                     num = float(s.get("stage"))
@@ -578,7 +578,7 @@ class Mirror:
                     num = None
                 text_value = str(s.get("stage") or "")
             elif stream == "state_of_mind" and hk_type.startswith("HK"):
-                # State of Mind: valence is the number; kind|labels|associations
+                # State of Mind: valence is the number. Kind|labels|associations
                 # travel in the text so the mood tool can say them in words.
                 row_type = hk_type
                 try:
@@ -606,7 +606,7 @@ class Mirror:
                     continue
                 text_value = repr(num)
             else:
-                n_ignored += 1   # unknown, kept in staging; never 4xx
+                n_ignored += 1   # unknown, kept in staging. Never 4xx
                 continue
 
             cur.execute("""
@@ -1009,7 +1009,7 @@ class Mirror:
     def daily(self, apple_type, days):
         floor = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         if any(h in apple_type for h in SUM_HINTS):
-            # Phone and watch both record the same walk; a flat SUM
+            # Phone and watch both record the same walk. A flat SUM
             # double-counts (observed +35% on steps). Per-source day totals,
             # richest source wins - the honest approximation of Apple's
             # interval-level dedup, and the same rule the app's math applies.
@@ -1067,9 +1067,9 @@ class Mirror:
     def strength(self, days):
         """Sets + per-exercise progression + muscle-group volume, mirroring
         what the app's own strength pages derive. Epley for est. 1RM, and
-        muscle attribution comes stored per set (the phone sends it; the
+        muscle attribution comes stored per set (the phone sends it. The
         server has no exercise catalog of its own). Every set is listed
-        with its type; warm-ups are not progression, volume or credit, the
+        with its type. Warm-ups are not progression, volume or credit, the
         rule the app's rings and records follow."""
         floor = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
         rows = self.conn.execute(
@@ -1149,7 +1149,7 @@ class Mirror:
                 return (["unspecified", "no change", "decreased", "increased"] + ["code %d" % c])[
                     c if 0 <= c <= 3 else 4]
             # Apple's "unspecified" (0) is a symptom present with no
-            # severity; the Health app shows it as Present, and log_symptom
+            # severity. The Health app shows it as Present, and log_symptom
             # writes it for "present", so it reads back as that word.
             words = ["present", "not present", "mild", "moderate", "severe"]
             return words[c] if 0 <= c < len(words) else "code %d" % c
@@ -1292,7 +1292,7 @@ TOOLS = [
                   "description": "Recent days (default 3, max 30)"}}}},
     {"name": "list_metrics",
      "description": "Every Apple Health metric synced from the user's "
-                    "iPhone, with its unit and the days it covers; pass a "
+                    "iPhone, with its unit and the days it covers. Pass a "
                     "'key' from here to metric_daily or metric_samples.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "metric_daily",
@@ -1308,7 +1308,7 @@ TOOLS = [
     {"name": "metric_samples",
      "description": "The individual records behind one metric, each with "
                     "its time, value and source app or device. Use it when "
-                    "the times of single readings matter; for daily totals "
+                    "the times of single readings matter. For daily totals "
                     "use metric_daily.",
      "inputSchema": {"type": "object", "properties": {
          "metric": {"type": "string", "description": "Metric key"},
@@ -1361,13 +1361,13 @@ TOOLS = [
 
 _WB_WHEN = {
     "day": {"type": "string",
-            "description": "YYYY-MM-DD on the user's phone (default today; "
+            "description": "YYYY-MM-DD on the user's phone (default today. "
                            "up to 30 days back, never the future)"},
     "time": {"type": "string",
              "description": "HH:MM, 24 hour, phone time (optional)"},
     "idempotency_key": {"type": "string",
                         "description": "Optional. The same key never logs "
-                                       "twice; use a new one to log an "
+                                       "twice. Use a new one to log an "
                                        "identical entry again on purpose."},
 }
 _WB_KEY = {"idempotency_key": _WB_WHEN["idempotency_key"]}
@@ -1471,7 +1471,7 @@ WRITE_TOOLS = [
      "description": "Record a weightlifting session with its sets: every "
                     "exercise, reps and weight, and a kind when a set is "
                     "a warm-up, a failure set or a drop set. Sets live in "
-                    "Marrow's strength log (strength_log shows them); Apple "
+                    "Marrow's strength log (strength_log shows them). Apple "
                     "Health gets the workout. Use the exercise names the "
                     "user already has in strength_log where they match.",
      "inputSchema": {"type": "object", "properties": {
@@ -1512,7 +1512,7 @@ WRITE_TOOLS = [
          "required": ["bedtime", "wake"]}},
     {"name": "log_symptom",
      "description": "Record a symptom the user reports in Apple Health, "
-                    "with how bad it is. Only what they tell you; never "
+                    "with how bad it is. Only what they tell you. Never "
                     "infer a symptom.",
      "inputSchema": {"type": "object", "properties": {
          "symptom": {"type": "string", "enum": list(SYMPTOMS)},
@@ -1554,7 +1554,7 @@ WRITE_TOOLS = [
      "description": "Take back something you did, by the id its tool "
                     "returned. Still waiting for the phone: cancelled. "
                     "Already applied: a meal, workout, sleep, symptom or "
-                    "mood entry is removed from Marrow and Apple Health; "
+                    "mood entry is removed from Marrow and Apple Health. "
                     "an edit, a delete or a targets change is put back as "
                     "it was. Water and weight already on the phone can "
                     "only be removed in the app.",
@@ -1662,7 +1662,7 @@ def _wb_entry(mirror, args):
                          "entry with its id.")
     now = mirror.local_now()
     if day < (now - timedelta(days=WB_DAYS_BACK)).strftime("%Y-%m-%d"):
-        raise ValueError(f"That entry is more than {WB_DAYS_BACK} days old; "
+        raise ValueError(f"That entry is more than {WB_DAYS_BACK} days old. "
                          "change it in the app.")
     return entry_id, day
 
@@ -1843,7 +1843,7 @@ def call_write_tool(mirror, name, args, client=None, on_queued=None):
                         raise ValueError("a set's kind must be work, warmup, "
                                          "failure or drop")
                     if skind != "work":
-                        # Older phones store every set as work; refusing
+                        # Older phones store every set as work. Refusing
                         # beats counting a warm-up as a record there.
                         if "setkind" not in (mirror.device().get("kinds") or []):
                             raise ValueError(WB_UPDATE)
@@ -2029,7 +2029,7 @@ def pair_page(pairing):
         img = base64.b64encode(buf.getvalue()).decode()
         qr = f'<img src="data:image/png;base64,{img}" alt="pairing QR">'
     except ImportError:
-        qr = "<p>(install <code>segno</code> for a QR; manual JSON below)</p>"
+        qr = "<p>(install <code>segno</code> for a QR. Manual JSON below)</p>"
     return f"""<!doctype html><meta charset="utf-8">
 <title>Pair Marrow</title>
 <body style="font-family:-apple-system,sans-serif;max-width:32em;margin:3em auto">
@@ -2064,7 +2064,7 @@ def make_handler(mirror, app_token, mcp_token, pairing):
 
         def _app_authed(self):
             # ?token= exists for the pairing page, which is opened from a
-            # link; only reads accept it. Writes must carry the header.
+            # link. Only reads accept it. Writes must carry the header.
             supplied = self.headers.get("X-HealthBridge-Token") or ""
             if not supplied and self.command == "GET":
                 q = parse_qs(urlparse(self.path).query)
@@ -2084,7 +2084,7 @@ def make_handler(mirror, app_token, mcp_token, pairing):
             if path == "/pair":
                 body = pair_page(pairing)
                 self.send_response(200)
-                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Type", "text/html. Charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
@@ -2099,7 +2099,7 @@ def make_handler(mirror, app_token, mcp_token, pairing):
 
         def do_POST(self):
             path = urlparse(self.path).path.rstrip("/")
-            # Only a plain Content-Length body is read; a chunked request
+            # Only a plain Content-Length body is read. A chunked request
             # or a malformed length is refused before anything is read.
             if self.headers.get("Transfer-Encoding"):
                 self.close_connection = True
@@ -2194,7 +2194,7 @@ def make_handler(mirror, app_token, mcp_token, pairing):
                                             "error": {"code": -32601,
                                                       "message": f"no {method}"}})
             except Exception as e:
-                # A tool's own ValueError is written for the AI; anything
+                # A tool's own ValueError is written for the AI. Anything
                 # else stays generic (no paths or internals on the wire).
                 text = (f"Error: {e}" if type(e) is ValueError
                         else "Error: the server could not complete that call")

@@ -41,7 +41,7 @@ Open the pairing URL on any screen, then in Marrow: **Export, Server MCP,
 Pair with a server**, and scan. From then on the app's background pushes keep
 the mirror current with the app closed. The app pairs over plain http only on
 your own networks (a private or tailnet IPv4 address, a `.local` or `.ts.net`
-name, a short LAN name); a public address needs https (`--url https://...`).
+name, a short LAN name). A public address needs https (`--url https://...`).
 
 ### Upgrading to 0.3.0
 
@@ -71,7 +71,7 @@ claude mcp add --transport http marrow \
 Download [`marrow.mcpb`](https://github.com/skeletonarmytech/marrow-mcp/releases/latest/download/marrow.mcpb),
 double-click it, and Claude Desktop installs the extension and asks for the
 URL and token. No terminal involved. (The bundle is a tiny zero-dependency
-bridge in `mcpb/`; it forwards Claude's stdio to your Marrow URL and nothing
+bridge in `mcpb/`. It forwards Claude's stdio to your Marrow URL and nothing
 else.)
 
 **Claude Desktop (manual), Cursor, or anything using an `mcp.json`**
@@ -179,7 +179,7 @@ the app. <https://marrowhealthapp.com/connect>
 Marrow is on the App Store, iOS 17+, and requires Apple Health.
 [Get it on the App Store.](https://apps.apple.com/app/id6800819435)
 
-The iOS app is closed source; this server is not, because you should be able to
+The iOS app is closed source. This server is not, because you should be able to
 read anything you are asked to run on your own hardware.
 
 ## Registry
