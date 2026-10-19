@@ -48,7 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = "0.3.3"
+__version__ = "0.3.4"
 
 PROTOCOL_VERSION = "2025-06-18"
 MAX_BODY = 32 * 1024 * 1024
@@ -2084,7 +2084,7 @@ def make_handler(mirror, app_token, mcp_token, pairing):
             if path == "/pair":
                 body = pair_page(pairing)
                 self.send_response(200)
-                self.send_header("Content-Type", "text/html. Charset=utf-8")
+                self.send_header("Content-Type", "text/html; charset=utf-8")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)

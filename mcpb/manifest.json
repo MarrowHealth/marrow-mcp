@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "marrow",
   "display_name": "Marrow Health",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "Ask questions of your own Apple Health data: 178 data series, workouts and nutrition, read-only, from your iPhone or self-hosted mirror.",
   "long_description": "Marrow is a free iOS app that puts your Apple Health data in one place and serves it over MCP. This extension connects Claude to it. Enter the URL and token shown in the app (Export, Local MCP) or by your self-hosted mirror, and Claude can answer questions like 'how did my sleep change since I started morning training?' from real data. Nine read tools on the self-hosted mirror, seven of them on the phone; neither can write to your health record.",
   "author": {

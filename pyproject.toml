@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "marrow-mcp"
-version = "0.3.3"
+version = "0.3.4"
 description = "Marrow Health: self-hosted mirror and MCP server. Nine tools let AI agents read your own Apple Health data; write tools appear only with Marrow Connect."
 readme = "README.md"
 requires-python = ">=3.10"
