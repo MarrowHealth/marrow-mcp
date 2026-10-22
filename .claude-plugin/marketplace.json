@@ -1,7 +1,7 @@
 {
   "name": "marrow",
   "owner": {
-    "name": "Skeleton Army",
+    "name": "Marrow Health LLC",
     "email": "support@marrowhealthapp.com"
   },
   "metadata": {
@@ -15,7 +15,7 @@
       "description": "Your Apple Health data, meals, workouts and sleep in Claude Code through Marrow Connect, with slash commands for a daily brief, a weekly review, doctor prep and logging by text.",
       "version": "0.4.0",
       "author": {
-        "name": "Skeleton Army",
+        "name": "Marrow Health LLC",
         "url": "https://marrowhealthapp.com"
       },
       "homepage": "https://marrowhealthapp.com/connect",

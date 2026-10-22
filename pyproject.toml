@@ -9,7 +9,7 @@ description = "Marrow Health: self-hosted mirror and MCP server. Thirteen read t
 readme = "README.md"
 requires-python = ">=3.10"
 license = { file = "LICENSE" }
-authors = [{ name = "Skeleton Army" }]
+authors = [{ name = "Marrow Health LLC" }]
 keywords = ["mcp", "model-context-protocol", "apple-health", "healthkit", "quantified-self", "agents"]
 classifiers = [
   "Development Status :: 4 - Beta",
