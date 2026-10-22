@@ -1,4 +1,4 @@
-<img src="https://raw.githubusercontent.com/skeletonarmytech/marrow-mcp/main/mcpb/icon.png" alt="Marrow Health" width="72" align="left">
+<img src="https://raw.githubusercontent.com/MarrowHealth/marrow-mcp/main/mcpb/icon.png" alt="Marrow Health" width="72" align="left">
 
 # Marrow Health MCP server (`marrow-mcp`)
 
@@ -68,7 +68,7 @@ claude mcp add --transport http marrow \
 
 **Claude Desktop, one click**
 
-Download [`marrow.mcpb`](https://github.com/skeletonarmytech/marrow-mcp/releases/latest/download/marrow.mcpb),
+Download [`marrow.mcpb`](https://github.com/MarrowHealth/marrow-mcp/releases/latest/download/marrow.mcpb),
 double-click it, and Claude Desktop installs the extension and asks for the
 URL and token. No terminal involved. (The bundle is a tiny zero-dependency
 bridge in `mcpb/`. It forwards Claude's stdio to your Marrow URL and nothing
@@ -156,7 +156,7 @@ training in the mornings?"* and let it go and look.
 - [recipes/](recipes/): receivers for Marrow's Automations (the app POSTs
   your data to any URL on a schedule, with the app closed): Home Assistant,
   n8n, Google Sheets through Apps Script, InfluxDB.
-- The Claude Code plugin: `/plugin marketplace add skeletonarmytech/marrow-mcp`
+- The Claude Code plugin: `/plugin marketplace add MarrowHealth/marrow-mcp`
   then `/plugin install marrow-health@marrow`. It adds the Marrow Connect
   server and four commands (`/marrow-health:how-am-i-doing`, `weekly-review`,
   `doctor-prep`, `log`) plus a skill that knows which tool answers what.

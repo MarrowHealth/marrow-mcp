@@ -4,7 +4,7 @@
   "description": "Marrow Health: your Apple Health data over MCP, from the free iOS app. Reads, and writes on demand.",
   "version": "0.4.1",
   "repository": {
-    "url": "https://github.com/skeletonarmytech/marrow-mcp",
+    "url": "https://github.com/MarrowHealth/marrow-mcp",
     "source": "github"
   },
   "websiteUrl": "https://marrowhealthapp.com/mcp",

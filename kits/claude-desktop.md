@@ -3,7 +3,7 @@
 ## One click
 
 Download
-[marrow.mcpb](https://github.com/skeletonarmytech/marrow-mcp/releases/latest/download/marrow.mcpb)
+[marrow.mcpb](https://github.com/MarrowHealth/marrow-mcp/releases/latest/download/marrow.mcpb)
 and double-click it. Claude Desktop installs the extension and asks for the
 URL and token. Paste `http://<server-ip>:8800/mcp` and the mirror's token
 (or the phone's URL and token from Export, Local MCP).

@@ -28,7 +28,7 @@ qr = ["segno>=1.6"]
 [project.urls]
 Homepage = "https://marrowhealthapp.com/"
 Documentation = "https://marrowhealthapp.com/mcp"
-Source = "https://github.com/skeletonarmytech/marrow-mcp"
+Source = "https://github.com/MarrowHealth/marrow-mcp"
 
 [project.scripts]
 marrow-server = "marrow_server:main"

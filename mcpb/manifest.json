@@ -11,11 +11,11 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/skeletonarmytech/marrow-mcp.git"
+    "url": "https://github.com/MarrowHealth/marrow-mcp.git"
   },
   "homepage": "https://marrowhealthapp.com",
   "documentation": "https://marrowhealthapp.com/mcp",
-  "support": "https://github.com/skeletonarmytech/marrow-mcp/issues",
+  "support": "https://github.com/MarrowHealth/marrow-mcp/issues",
   "server": {
     "type": "node",
     "entry_point": "server/index.js",

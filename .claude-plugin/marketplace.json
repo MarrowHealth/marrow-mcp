@@ -19,7 +19,7 @@
         "url": "https://marrowhealthapp.com"
       },
       "homepage": "https://marrowhealthapp.com/connect",
-      "repository": "https://github.com/skeletonarmytech/marrow-mcp",
+      "repository": "https://github.com/MarrowHealth/marrow-mcp",
       "license": "MIT",
       "keywords": ["apple-health", "healthkit", "health", "fitness", "nutrition", "marrow"],
       "category": "productivity"

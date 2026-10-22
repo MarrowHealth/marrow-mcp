@@ -50,7 +50,7 @@ you once Allow AI write is on in the app.
 
 ## The plugin
 
-`/plugin marketplace add skeletonarmytech/marrow-mcp` then
+`/plugin marketplace add MarrowHealth/marrow-mcp` then
 `/plugin install marrow-health@marrow` gives you the Connect server plus
 four slash commands (`/marrow-health:how-am-i-doing`, `weekly-review`,
 `doctor-prep`, `log`) and a skill that knows which tool answers what.
