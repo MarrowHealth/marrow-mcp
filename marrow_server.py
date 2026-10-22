@@ -53,10 +53,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 PROTOCOL_VERSION = "2025-06-18"
 MAX_BODY = 32 * 1024 * 1024
+DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 # App stream key -> Apple-native type. `scale` converts wire value back to
 # Apple-native storage (the one that matters: SpO2 travels as 97, stores as
@@ -224,6 +225,13 @@ CREATE TABLE IF NOT EXISTS diary (
     extra     TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_diary_day ON diary (day);
+CREATE TABLE IF NOT EXISTS daily_verified (
+    type  TEXT NOT NULL,
+    day   TEXT NOT NULL,
+    value REAL NOT NULL,
+    unit  TEXT,
+    PRIMARY KEY (type, day)
+);
 CREATE TABLE IF NOT EXISTS ingest_log (
     ts TEXT, seq INTEGER, stream TEXT, added INTEGER, deleted INTEGER
 );
@@ -421,7 +429,7 @@ class Mirror:
             offset = 0
         added = payload.get("added") or []
         deleted = payload.get("deleted") or []
-        if stream not in ("strength_session", "diary_day") and (
+        if stream not in ("strength_session", "diary_day", "daily_series") and (
                 not isinstance(added, list) or not isinstance(deleted, list)
                 or not all(isinstance(x, dict) for x in added)):
             raise ValueError("added/deleted must be lists (of objects)")
@@ -470,6 +478,40 @@ class Mirror:
             self.conn.commit()
             return {"ok": True, "stream": stream, "added": n, "deleted": 0,
                     "ignored": max(len(entries) - n, 0)}
+
+        # The phone's own verified day values (its DailyMath: per-source
+        # dedup, the night rule, the plausibility filter), one payload per
+        # metric with the days it recomputed. Where a day has one, every
+        # read prefers it to this server's approximation from raw samples,
+        # so the mirror says what the app says. Phones before 1.4.2 never
+        # send it and nothing here depends on it.
+        if stream == "daily_series":
+            key = str(payload.get("type") or "")
+            days_map = payload.get("days") or {}
+            gone = payload.get("deleted") or []
+            if not key or not isinstance(days_map, dict) or not isinstance(gone, list):
+                raise ValueError("daily_series needs type and days")
+            unit = str(payload.get("unit") or "")
+            cur = self.conn.cursor()
+            n = 0
+            for day, v in days_map.items():
+                if (not DAY_RE.match(str(day)) or isinstance(v, bool)
+                        or not isinstance(v, (int, float)) or v != v):
+                    continue
+                cur.execute(
+                    "INSERT INTO daily_verified(type,day,value,unit) VALUES(?,?,?,?) "
+                    "ON CONFLICT(type,day) DO UPDATE SET value=excluded.value, "
+                    "unit=excluded.unit", (key, str(day), float(v), unit))
+                n += 1
+            for day in gone:
+                cur.execute("DELETE FROM daily_verified WHERE type=? AND day=?",
+                            (key, str(day)))
+            cur.execute("INSERT INTO ingest_log VALUES(?,?,?,?,?)",
+                        (datetime.now().isoformat(timespec="seconds"),
+                         payload.get("seq"), stream, n, len(gone)))
+            self.conn.commit()
+            return {"ok": True, "stream": stream, "added": n, "deleted": len(gone),
+                    "ignored": max(len(days_map) - n, 0)}
 
         # Strength sessions arrive whole and replace whole: the app's own
         # save semantics are latest-wins per session, so an edited workout
@@ -1025,6 +1067,16 @@ class Mirror:
             return floor
         return (self.local_now() - timedelta(days=days)).strftime("%Y-%m-%d")
 
+    def verified(self, apple_type, floor, ceil):
+        """The phone's own day values for a type (daily_series), under any
+        key the app sends them by: its stream key or Apple's short name."""
+        keys = {k for k, (t, _s) in KEYMAP.items() if t == apple_type}
+        keys.add(short_key(apple_type))
+        marks = ",".join("?" * len(keys))
+        return dict(self.conn.execute(
+            f"SELECT day, value FROM daily_verified WHERE type IN ({marks}) "
+            "AND day>=? AND day<=?", (*sorted(keys), floor, ceil)).fetchall())
+
     def daily(self, apple_type, days, floor=None, ceil=None):
         floor, ceil = self._floor(days, floor), ceil or self.FAR
         if any(h in apple_type for h in SUM_HINTS):
@@ -1032,16 +1084,24 @@ class Mirror:
             # double-counts (observed +35% on steps). Per-source day totals,
             # richest source wins - the honest approximation of Apple's
             # interval-level dedup, and the same rule the app's math applies.
-            return self.conn.execute(
+            rows = self.conn.execute(
                 "SELECT day, MAX(s) FROM ("
                 "  SELECT day, source_name, SUM(num) AS s FROM records"
                 "  WHERE type=? AND day>=? AND day<=? AND num IS NOT NULL"
                 "  GROUP BY day, source_name"
                 ") GROUP BY day ORDER BY day", (apple_type, floor, ceil)).fetchall()
-        return self.conn.execute(
-            "SELECT day, AVG(num) FROM records "
-            "WHERE type=? AND day>=? AND day<=? AND num IS NOT NULL "
-            "GROUP BY day ORDER BY day", (apple_type, floor, ceil)).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT day, AVG(num) FROM records "
+                "WHERE type=? AND day>=? AND day<=? AND num IS NOT NULL "
+                "GROUP BY day ORDER BY day", (apple_type, floor, ceil)).fetchall()
+        # A day the phone has scored itself reads the phone's number.
+        ver = self.verified(apple_type, floor, ceil)
+        if not ver:
+            return rows
+        merged = dict(rows)
+        merged.update(ver)
+        return sorted(merged.items())
 
     def samples(self, apple_type, days, limit, floor=None, ceil=None, before=None):
         """Newest first. `before` is the start of the last record a caller
@@ -2431,7 +2491,10 @@ HOW_TO_READ = ("z is how far a value sits from this user's own trailing "
                "the day itself excluded. The phrases are the app's: beyond "
                "0.7 is above or below their normal, beyond 1.5 well above or "
                "well below. direction compares the 90-day slope with that "
-               "spread. None means too little history yet.")
+               "spread. None means too little history yet. A total still "
+               "growing today (steps, calories, exercise minutes) reads so "
+               "far today and is scored on the last complete day, the app's "
+               "partial-day rule.")
 
 
 def parse_day(s, key="day"):
@@ -2476,6 +2539,15 @@ def metric_series(mirror, key, floor, ceil):
     return {d: v for d, v in mirror.daily(t, 0, floor=floor, ceil=ceil)}
 
 
+def is_cumulative(mirror, key):
+    """A day total that is still growing (steps, calories, exercise minutes)
+    as against a reading (resting heart rate, weight). The app never scores
+    a growing total against full days before its day is over (the
+    partial-day rule), and neither does this server."""
+    t = mirror.resolve(key)
+    return bool(t) and any(h in t for h in SUM_HINTS)
+
+
 def metric_unit(mirror, key):
     if key == "sleep_hours":
         return "h"
@@ -2518,8 +2590,12 @@ def baselines(mirror, args):
         raise ValueError("metrics must be a list of metric keys (see list_metrics)")
     floor = _shift(day, -max(window, 90) - 1)
     out, missing = [], []
+    today = mirror.today()
     for key in keys[:40]:
         series = metric_series(mirror, key, floor, day)
+        if series and day == today and is_cumulative(mirror, key):
+            # Today's total is still growing: score the last complete day.
+            series = {d: v for d, v in series.items() if d < day}
         if not series:
             missing.append(key)
             continue
@@ -2550,7 +2626,8 @@ def what_changed(mirror, args):
         series = metric_series(mirror, key, p_from, r_to)
         if not series:
             continue
-        recent = [v for d, v in series.items() if d >= r_from]
+        growing = r_to == mirror.today() and is_cumulative(mirror, key)
+        recent = [v for d, v in series.items() if d >= r_from and not (growing and d == r_to)]
         prior = [v for d, v in series.items() if d < r_from]
         unit = metric_unit(mirror, key)
         e = {"key": key, "name": name, "unit": unit,
@@ -2689,7 +2766,8 @@ def data_quality(mirror, args):
         metrics.append({"key": key, "unit": unit or "", "first_day": lo, "latest_day": hi,
                         "days_with_data": cov, "coverage_pct": round(cov * 100 / days),
                         "cadence": cadence, "sources": sources,
-                        "stale": key in stale})
+                        "stale": key in stale,
+                        "verified_days": len(mirror.verified(t, floor, today))})
         if key in stale:
             issues.append(f"{_plain(key).capitalize()} has not synced since {hi}")
         if len(sources) > 1 and any(h in t for h in SUM_HINTS):
@@ -2757,6 +2835,12 @@ def daily_brief(mirror, args):
             if latest:
                 e.update({"latest_day": latest, "latest": _r(series[latest], 2)})
             e["context"] = "nothing for this day"
+        elif day == today and is_cumulative(mirror, key):
+            # The partial-day rule: a total still growing is shown beside
+            # a usual full day, never scored against one.
+            base = rolling(series, window).get(day)
+            e.update({"context": "so far today",
+                      "usual": _r(base[0], 2) if base else None})
         else:
             base = rolling(series, window).get(day)
             z = (v - base[0]) / base[1] if base and base[1] > 0 else None

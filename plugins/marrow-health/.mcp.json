@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "marrow": {
+      "type": "http",
+      "url": "https://connect.marrowhealthapp.com/mcp"
+    }
+  }
+}

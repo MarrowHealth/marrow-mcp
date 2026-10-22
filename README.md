@@ -149,6 +149,18 @@ vocabulary.
 Then ask your agent things like *"how did my sleep change once I started
 training in the mornings?"* and let it go and look.
 
+## Kits, recipes and the Claude Code plugin
+
+- [kits/](kits/): copy-and-paste setup for Claude Code, Claude Desktop,
+  Cursor, OpenClaw and Hermes Agent.
+- [recipes/](recipes/): receivers for Marrow's Automations (the app POSTs
+  your data to any URL on a schedule, with the app closed): Home Assistant,
+  n8n, Google Sheets through Apps Script, InfluxDB.
+- The Claude Code plugin: `/plugin marketplace add skeletonarmytech/marrow-mcp`
+  then `/plugin install marrow-health@marrow`. It adds the Marrow Connect
+  server and four commands (`/marrow-health:how-am-i-doing`, `weekly-review`,
+  `doctor-prep`, `log`) plus a skill that knows which tool answers what.
+
 ## Why not the built-in Claude or ChatGPT connector?
 
 Both Claude (Pro/Max, US) and ChatGPT now read Apple Health natively. Use them
