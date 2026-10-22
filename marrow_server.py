@@ -15,6 +15,10 @@ What it does:
   - serves it to AI agents over MCP (Claude, Cursor, any MCP client),
     24/7. This is the always-on companion to the app's on-device
     Live mode.
+  - answers in the app's own terms: daily_brief, baselines, what_changed
+    and data_quality score each day against your own trailing normal with
+    the same math the app's Home page uses, so an AI starts from a read
+    that is already true instead of re-deriving one from raw samples.
 
 Your data flows only from your phone to this machine. No cloud, no vendor,
 no telemetry. Put it behind HTTPS (tailscale serve, Caddy) if you want to
@@ -41,14 +45,15 @@ import re
 import secrets
 import socket
 import sqlite3
+import statistics
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse, parse_qs
 
-__version__ = "0.3.4"
+__version__ = "0.4.0"
 
 PROTOCOL_VERSION = "2025-06-18"
 MAX_BODY = 32 * 1024 * 1024
@@ -1006,8 +1011,22 @@ class Mirror:
                 return t
         return None
 
-    def daily(self, apple_type, days):
-        floor = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    # Every read takes a window of phone-local days: `days` back from the
+    # phone's today (the day column was written on the phone's calendar, so
+    # the server's clock must not pick the floor), or an explicit
+    # floor..ceil, both inclusive. FAR leaves the top open.
+    FAR = "9999-12-31"
+
+    def today(self):
+        return self.local_now().strftime("%Y-%m-%d")
+
+    def _floor(self, days, floor=None):
+        if floor:
+            return floor
+        return (self.local_now() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+    def daily(self, apple_type, days, floor=None, ceil=None):
+        floor, ceil = self._floor(days, floor), ceil or self.FAR
         if any(h in apple_type for h in SUM_HINTS):
             # Phone and watch both record the same walk. A flat SUM
             # double-counts (observed +35% on steps). Per-source day totals,
@@ -1016,35 +1035,38 @@ class Mirror:
             return self.conn.execute(
                 "SELECT day, MAX(s) FROM ("
                 "  SELECT day, source_name, SUM(num) AS s FROM records"
-                "  WHERE type=? AND day>=? AND num IS NOT NULL"
+                "  WHERE type=? AND day>=? AND day<=? AND num IS NOT NULL"
                 "  GROUP BY day, source_name"
-                ") GROUP BY day ORDER BY day", (apple_type, floor)).fetchall()
+                ") GROUP BY day ORDER BY day", (apple_type, floor, ceil)).fetchall()
         return self.conn.execute(
             "SELECT day, AVG(num) FROM records "
-            "WHERE type=? AND day>=? AND num IS NOT NULL "
-            "GROUP BY day ORDER BY day", (apple_type, floor)).fetchall()
+            "WHERE type=? AND day>=? AND day<=? AND num IS NOT NULL "
+            "GROUP BY day ORDER BY day", (apple_type, floor, ceil)).fetchall()
 
-    def samples(self, apple_type, days, limit):
-        floor = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    def samples(self, apple_type, days, limit, floor=None, ceil=None, before=None):
+        """Newest first. `before` is the start of the last record a caller
+        already has: the page after it, with nothing repeated or skipped."""
+        floor, ceil = self._floor(days, floor), ceil or self.FAR
         return self.conn.execute(
             "SELECT start_date, end_date, value, num, source_name FROM records "
-            "WHERE type=? AND day>=? ORDER BY start_date DESC LIMIT ?",
-            (apple_type, floor, limit)).fetchall()
+            "WHERE type=? AND day>=? AND day<=? AND start_date<? "
+            "ORDER BY start_date DESC LIMIT ?",
+            (apple_type, floor, ceil, before or self.FAR, limit)).fetchall()
 
-    def workouts(self, days):
-        floor = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    def workouts(self, days, floor=None, ceil=None):
+        floor, ceil = self._floor(days, floor), ceil or self.FAR
         return self.conn.execute(
             "SELECT activity_type, start_date, end_date, duration, "
-            "duration_unit, source_name FROM workouts WHERE day>=? "
-            "ORDER BY start_date DESC", (floor,)).fetchall()
+            "duration_unit, source_name FROM workouts WHERE day>=? AND day<=? "
+            "ORDER BY start_date DESC", (floor, ceil)).fetchall()
 
-    def nutrition(self, days):
+    def nutrition(self, days, floor=None, ceil=None):
         """The meal diary: entries grouped by day, full nutrient detail."""
-        floor = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        floor, ceil = self._floor(days, floor), ceil or self.FAR
         rows = self.conn.execute(
             "SELECT day, meal, name, grams, kcal, protein, carbs, fat, "
-            "logged_at, extra, entry_id FROM diary WHERE day>=? "
-            "ORDER BY day, logged_at", (floor,)).fetchall()
+            "logged_at, extra, entry_id FROM diary WHERE day>=? AND day<=? "
+            "ORDER BY day, logged_at", (floor, ceil)).fetchall()
         out = {}
         present = {r[10] for r in rows}
         for (day, meal, name, grams, kcal, protein, carbs, fat,
@@ -1064,18 +1086,18 @@ class Mirror:
             out.setdefault(day, []).append(e)
         return [{"day": d, "entries": es} for d, es in sorted(out.items())]
 
-    def strength(self, days):
+    def strength(self, days, floor=None, ceil=None):
         """Sets + per-exercise progression + muscle-group volume, mirroring
         what the app's own strength pages derive. Epley for est. 1RM, and
         muscle attribution comes stored per set (the phone sends it. The
         server has no exercise catalog of its own). Every set is listed
         with its type. Warm-ups are not progression, volume or credit, the
         rule the app's rings and records follow."""
-        floor = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        floor, ceil = self._floor(days, floor), ceil or self.FAR
         rows = self.conn.execute(
             "SELECT uuid, session_id, session_name, exercise, idx, weight, "
             "unit, reps, done_at, day, muscles, kind FROM strength_sets "
-            "WHERE day>=? ORDER BY done_at, rowid", (floor,)).fetchall()
+            "WHERE day>=? AND day<=? ORDER BY done_at, rowid", (floor, ceil)).fetchall()
 
         def e1rm(w, r):
             if not w or not r:
@@ -1130,10 +1152,10 @@ class Mirror:
                      "set_credits": round(v["set_credits"], 1)}
                     for g, v in sorted(muscle.items())]}
 
-    def symptoms_and_mood(self, days):
+    def symptoms_and_mood(self, days, floor=None, ceil=None):
         """Symptoms with Apple's severity words and State of Mind entries
         with their feelings, one entry each, newest last."""
-        floor = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+        floor, ceil = self._floor(days, floor), ceil or self.FAR
         presence = {"HKCategoryTypeIdentifierSleepChanges",
                     "HKCategoryTypeIdentifierMoodChanges"}
         appetite = {"HKCategoryTypeIdentifierAppetiteChanges"}
@@ -1182,8 +1204,9 @@ class Mirror:
         out = []
         rows = self.conn.execute(
             "SELECT type, start_date, value, num, source_name FROM records "
-            "WHERE day>=? AND (type LIKE 'HKCategoryTypeIdentifier%' "
-            "OR type='HKStateOfMindTypeIdentifier') ORDER BY start_date", (floor,)).fetchall()
+            "WHERE day>=? AND day<=? AND (type LIKE 'HKCategoryTypeIdentifier%' "
+            "OR type='HKStateOfMindTypeIdentifier') ORDER BY start_date",
+            (floor, ceil)).fetchall()
         symptom_types = set()
         for t, s, v, num, src in rows:
             if t == "HKStateOfMindTypeIdentifier":
@@ -1210,7 +1233,7 @@ class Mirror:
                 "scale": {"valence": "-1 very unpleasant to +1 very pleasant",
                           "severity": "Apple Health words"}}
 
-    def sleep(self, days, gap_hours=3.0, min_hours=1.0):
+    def sleep(self, days, gap_hours=3.0, min_hours=1.0, floor=None, ceil=None):
         """Nights, attributed to the wake day, by the app's exact rule:
         asleep segments closer than `gap_hours` form one session, the
         longest session per wake day is the night, and EVERY segment of
@@ -1218,12 +1241,16 @@ class Mirror:
         segments by their own calendar day drops the first hours of a night
         that starts before midnight, which is how a 6 h 52 m night reads
         as 5 h 13 m. Awake minutes are reported but not counted as sleep,
-        matching Apple Health's "time asleep"."""
-        floor = (datetime.now() - timedelta(days=days + 1)).strftime("%Y-%m-%d")
+        matching Apple Health's "time asleep". With an explicit floor the
+        nights are those that END on floor..ceil."""
+        first = floor
+        if floor:
+            floor = (date.fromisoformat(floor) - timedelta(days=1)).isoformat()
+        floor = self._floor(days + 1, floor)
         rows = self.conn.execute(
             "SELECT start_date, end_date, value FROM records "
-            "WHERE type='HKCategoryTypeIdentifierSleepAnalysis' AND day>=? "
-            "ORDER BY start_date", (floor,)).fetchall()
+            "WHERE type='HKCategoryTypeIdentifierSleepAnalysis' AND day>=? AND day<=? "
+            "ORDER BY start_date", (floor, ceil or self.FAR)).fetchall()
         names = {"AsleepCore": "core", "AsleepDeep": "deep", "AsleepREM": "rem",
                  "AsleepUnspecified": "asleep", "Awake": "awake"}
 
@@ -1277,23 +1304,53 @@ class Mirror:
                         "wake": b.strftime("%Y-%m-%d %H:%M"),
                         "asleep_hours": round(h, 2),
                         "stages_min": {k: round(v) for k, v in sorted(stages.items())}})
+        if first:
+            return [n for n in out if first <= n["night"] <= (ceil or self.FAR)]
         return out[-days:]
 
 
+# Every read takes `days` back from the phone's today, or an explicit
+# from..to on the phone's calendar. The two are the same window either way.
+_RANGE = {
+    "from": {"type": "string",
+             "description": "First day, YYYY-MM-DD on the phone's calendar "
+                            "(optional, used instead of days)"},
+    "to": {"type": "string",
+           "description": "Last day, YYYY-MM-DD, inclusive (optional, "
+                          "default today)"},
+}
+_DAY_ARG = {"type": "string",
+            "description": "YYYY-MM-DD on the phone's calendar (default today)"}
+_WINDOW_ARG = {"type": "integer",
+               "description": "Days of history a value is scored against "
+                              "(default 60, the app's own window, 7 to 90)"}
+
+
+def _days(text):
+    return {"days": {"type": "integer", "description": text}, **_RANGE}
+
+
+_BY_DAY = {"type": "object", "additionalProperties": {"type": "number"},
+           "description": "YYYY-MM-DD to value"}
+_STRINGS = {"type": "array", "items": {"type": "string"}}
+
 TOOLS = [
     {"name": "health_summary",
-     "description": "A quick overview of the user's recent days, one value "
+     "description": "The user's recent days as a plain table, one value "
                     "per day: steps, active calories, exercise minutes, "
                     "resting heart rate, heart rate variability, body weight, "
-                    "calories eaten and hours asleep. Start here for \"how "
-                    "am I doing\" questions.",
-     "inputSchema": {"type": "object", "properties": {
-         "days": {"type": "integer",
-                  "description": "Recent days (default 3, max 30)"}}}},
+                    "calories eaten and hours asleep. For \"how am I doing\" "
+                    "prefer daily_brief, which scores each value against the "
+                    "user's own normal.",
+     "inputSchema": {"type": "object", "properties":
+                     _days("Recent days (default 3, max 30)")},
+     "outputSchema": {"type": "object", "additionalProperties": _BY_DAY,
+                      "description": "Metric key to its days"}},
     {"name": "list_metrics",
      "description": "Every Apple Health metric synced from the user's "
                     "iPhone, with its unit and the days it covers. Pass a "
-                    "'key' from here to metric_daily or metric_samples.",
+                    "'key' from here to metric_daily, metric_samples or "
+                    "baselines.",
      "inputSchema": {"type": "object", "properties": {}}},
     {"name": "metric_daily",
      "description": "One metric as one value per day (a day's total for "
@@ -1302,33 +1359,39 @@ TOOLS = [
                     "comparisons between days.",
      "inputSchema": {"type": "object", "properties": {
          "metric": {"type": "string", "description": "Metric key"},
-         "days": {"type": "integer",
-                  "description": "Days back (default 30, max 400)"}},
-         "required": ["metric"]}},
+         **_days("Days back (default 30, max 400)")},
+         "required": ["metric"]},
+     "outputSchema": {"type": "object", "properties": {
+         "metric": {"type": "string"}, "days": _BY_DAY}}},
     {"name": "metric_samples",
      "description": "The individual records behind one metric, each with "
-                    "its time, value and source app or device. Use it when "
-                    "the times of single readings matter. For daily totals "
-                    "use metric_daily.",
+                    "its time, value and source app or device, newest "
+                    "first. Use it when the times of single readings "
+                    "matter. For daily totals use metric_daily. When a "
+                    "page is full (limit records), pass the last record's "
+                    "start as before to get the next page.",
      "inputSchema": {"type": "object", "properties": {
          "metric": {"type": "string", "description": "Metric key"},
-         "days": {"type": "integer", "description": "Days back (default 7)"},
+         **_days("Days back (default 7, max 400)"),
          "limit": {"type": "integer",
-                   "description": "Max records (default 200, max 1000)"}},
+                   "description": "Max records (default 200, max 1000)"},
+         "before": {"type": "string",
+                    "description": "Paging: the start of the last record "
+                                   "you already have. Returns the records "
+                                   "before it."}},
          "required": ["metric"]}},
     {"name": "workouts",
      "description": "The user's workouts from Apple Health, from every app "
                     "and device: activity, start, end and duration.",
-     "inputSchema": {"type": "object", "properties": {
-         "days": {"type": "integer", "description": "Days back (default 30)"}}}},
+     "inputSchema": {"type": "object", "properties":
+                     _days("Days back (default 30, max 400)")}},
     {"name": "nutrition_log",
      "description": "The meal diary: every logged food with full nutrient "
                     "detail, grouped by day. Entries an AI added that the "
                     "phone has not applied yet are included and marked "
                     "pending.",
-     "inputSchema": {"type": "object", "properties": {
-         "days": {"type": "integer",
-                  "description": "Days back (default 7, max 90)"}}}},
+     "inputSchema": {"type": "object", "properties":
+                     _days("Days back (default 7, max 90)")}},
     {"name": "strength_log",
      "description": "Weightlifting detail: every set (exercise, weight, "
                     "reps, set_type: work, warmup, failure or drop) with "
@@ -1336,32 +1399,116 @@ TOOLS = [
                     "per muscle group. Warm-up sets are listed but left out "
                     "of progression, volume and muscle credits, as in the "
                     "app.",
-     "inputSchema": {"type": "object", "properties": {
-         "days": {"type": "integer",
-                  "description": "Days back (default 90, max 400)"}}}},
+     "inputSchema": {"type": "object", "properties":
+                     _days("Days back (default 90, max 400)")},
+     "outputSchema": {"type": "object", "properties": {
+         "sets": {"type": "array"}, "exercises": {"type": "array"},
+         "muscle_groups": {"type": "array"}}}},
     {"name": "symptoms_and_mood",
      "description": "Symptoms logged in the Health app with their severity in "
                     "words, and State of Mind entries (daily mood or momentary "
                     "emotion) with valence, feelings and what they were about. "
                     "Use this for questions about symptoms or mood the user "
                     "logged in Apple Health or Marrow.",
-     "inputSchema": {"type": "object", "properties": {
-         "days": {"type": "integer",
-                  "description": "Days back (default 30, max 400)"}}}},
+     "inputSchema": {"type": "object", "properties":
+                     _days("Days back (default 30, max 400)")},
+     "outputSchema": {"type": "object", "properties": {
+         "entries": {"type": "array"}, "symptom_types_seen": _STRINGS,
+         "scale": {"type": "object"}}}},
     {"name": "sleep_log",
      "description": "Nights of sleep, one per wake day, exactly as the app "
                     "and Apple Health count them: bedtime, wake time, hours "
                     "asleep, and minutes per stage (core, deep, rem, awake). "
                     "Use this for any sleep question instead of raw "
                     "metric_samples, which cannot be summed by calendar day.",
+     "inputSchema": {"type": "object", "properties":
+                     _days("Nights back (default 7, max 90)")}},
+    # The model-ready reads. Each answers in the app's own terms, scored
+    # against the user's trailing normal with the math Home uses
+    # (Core/Derive.swift), so an AI starts from a read that is already
+    # true for this person instead of judging a number against the
+    # population.
+    {"name": "daily_brief",
+     "description": "One day in the app's own terms: each key metric with "
+                    "its value and a phrase against the user's own normal "
+                    "(normal for you, above your normal, well below your "
+                    "normal), food and water against the targets, last "
+                    "night's sleep, training done, mood and symptoms, and "
+                    "flags worth mentioning. Start here for how am I "
+                    "doing, what should I know today, or before giving any "
+                    "advice. Default day is the phone's today.",
+     "inputSchema": {"type": "object", "properties": {
+         "day": _DAY_ARG, "window": _WINDOW_ARG}},
+     "outputSchema": {"type": "object", "properties": {
+         "day": {"type": "string"}, "as_of": {"type": "string"},
+         "metrics": {"type": "array"}, "food": {"type": "object"},
+         "water": {"type": "object"}, "sleep": {"type": ["object", "null"]},
+         "training": {"type": "object"}, "mood": {"type": "object"},
+         "targets": {"type": ["object", "null"]}, "flags": _STRINGS,
+         "data": {"type": "object"}}}},
+    {"name": "baselines",
+     "description": "The user's own normal per metric: mean and spread over "
+                    "the trailing window, the latest value's z and phrase, "
+                    "the 7-day mean and the 90-day trend per month. The "
+                    "same math as the app's Home page. Use it to say whether "
+                    "a number is high or low for this person instead of "
+                    "against population figures.",
+     "inputSchema": {"type": "object", "properties": {
+         "metrics": {"type": "array", "items": {"type": "string"},
+                     "description": "Metric keys from list_metrics, or "
+                                    "sleep_hours (default: the key metrics)"},
+         "window": _WINDOW_ARG,
+         "day": {"type": "string",
+                 "description": "Score as of this day, YYYY-MM-DD "
+                                "(default today)"}}},
+     "outputSchema": {"type": "object", "properties": {
+         "day": {"type": "string"}, "window_days": {"type": "integer"},
+         "metrics": {"type": "array"}, "missing": _STRINGS,
+         "how_to_read": {"type": "string"}}}},
+    {"name": "what_changed",
+     "description": "The recent days against the period before them: per "
+                    "metric the recent and prior means, the change and how "
+                    "notable it is for this person, plus food, training, "
+                    "sleep and bedtime shifts, and any stream that started "
+                    "or stopped arriving. Notable items come first. Use it "
+                    "for weekly reviews and for what is different lately.",
      "inputSchema": {"type": "object", "properties": {
          "days": {"type": "integer",
-                  "description": "Nights back (default 7, max 90)"}}}},
+                  "description": "Recent window in days (default 7, max 30)"},
+         "compare_days": {"type": "integer",
+                          "description": "The prior window it is compared "
+                                         "with (default 28, max 90)"},
+         "day": {"type": "string",
+                 "description": "Last day of the recent window, YYYY-MM-DD "
+                                "(default today)"}}},
+     "outputSchema": {"type": "object", "properties": {
+         "recent": {"type": "object"}, "prior": {"type": "object"},
+         "metrics": {"type": "array"}, "food": {"type": "object"},
+         "training": {"type": "object"}, "sleep": {"type": "object"},
+         "streams": {"type": "object"}, "notable": _STRINGS}}},
+    {"name": "data_quality",
+     "description": "What the mirror actually holds and how fresh it is: "
+                    "per metric the latest day, coverage over the recent "
+                    "window, cadence (daily or occasional), its sources and "
+                    "whether it has gone stale, plus diary, sleep and "
+                    "training coverage, when the phone last synced and "
+                    "whether write-back is on. Call it before trusting an "
+                    "absence: no sleep in the mirror is not the same as no "
+                    "sleep.",
+     "inputSchema": {"type": "object", "properties": {
+         "days": {"type": "integer",
+                  "description": "Window for coverage (default 14, max 90)"}}},
+     "outputSchema": {"type": "object", "properties": {
+         "today": {"type": "string"}, "last_sync": {"type": ["string", "null"]},
+         "window_days": {"type": "integer"}, "metrics": {"type": "array"},
+         "diary": {"type": "object"}, "sleep": {"type": "object"},
+         "training": {"type": "object"}, "write_back": {"type": "object"},
+         "issues": _STRINGS}}},
 ]
 
 _WB_WHEN = {
     "day": {"type": "string",
-            "description": "YYYY-MM-DD on the user's phone (default today. "
+            "description": "YYYY-MM-DD on the user's phone (default today, "
                            "up to 30 days back, never the future)"},
     "time": {"type": "string",
              "description": "HH:MM, 24 hour, phone time (optional)"},
@@ -1569,10 +1716,237 @@ WRITE_TOOLS = [
     {"name": "targets",
      "description": "The user's daily targets as set in Marrow: calories, "
                     "macros, water, steps, sleep and exercise minutes.",
-     "inputSchema": {"type": "object", "properties": {}}},
+     "inputSchema": {"type": "object", "properties": {}},
+     "outputSchema": {"type": "object", "properties": {
+         "targets": {"type": ["object", "null"]}, "as_of": {"type": "string"},
+         "note": {"type": "string"}}}},
 ]
 READ_TOOLS = TOOLS
 TOOLS = READ_TOOLS + WRITE_TOOLS
+
+# ---- what every MCP client sees, the same from both servers ----
+# Hand-written titles (Claude's permission prompts show them) and the
+# directories' annotations: writes that change or remove data are
+# destructive (Claude asks first), only the writes that repeat harmlessly
+# are idempotent, nothing reaches outside the user's own mirror.
+TOOL_TITLES = {
+    "health_summary": "Health summary",
+    "list_metrics": "List health metrics",
+    "metric_daily": "Daily values for a metric",
+    "metric_samples": "Recorded samples for a metric",
+    "workouts": "Workouts",
+    "nutrition_log": "Food diary",
+    "strength_log": "Strength training log",
+    "symptoms_and_mood": "Symptoms and mood",
+    "sleep_log": "Sleep log",
+    "daily_brief": "Daily brief",
+    "baselines": "Your baselines",
+    "what_changed": "What changed",
+    "data_quality": "Data quality",
+    "targets": "Daily targets",
+    "pending_entries": "Changes sent by the AI",
+    "log_meal": "Log a meal",
+    "log_water": "Log water",
+    "log_weight": "Log weight",
+    "log_workout": "Log a workout",
+    "log_strength": "Log a lifting session",
+    "log_sleep": "Log sleep",
+    "log_symptom": "Log a symptom",
+    "log_mood": "Log mood",
+    "edit_entry": "Edit a food entry",
+    "delete_entry": "Delete a food entry",
+    "set_targets": "Change daily targets",
+    "undo_entry": "Undo a change",
+}
+DESTRUCTIVE_TOOLS = frozenset(("edit_entry", "delete_entry", "undo_entry", "set_targets"))
+IDEMPOTENT_WRITES = frozenset(("set_targets", "delete_entry", "undo_entry"))
+
+
+def annotate(tools):
+    return [
+        {**t, "title": TOOL_TITLES.get(t["name"]) or t["name"].replace("_", " ").title(),
+         "annotations": {"title": (TOOL_TITLES.get(t["name"])
+                                   or t["name"].replace("_", " ").title()),
+                         "readOnlyHint": t["name"] not in WRITE_TOOL_NAMES,
+                         "destructiveHint": t["name"] in DESTRUCTIVE_TOOLS,
+                         "idempotentHint": (t["name"] not in WRITE_TOOL_NAMES
+                                            or t["name"] in IDEMPOTENT_WRITES),
+                         "openWorldHint": False}}
+        for t in tools]
+
+
+ANNOTATED_TOOLS = annotate(TOOLS)
+ANNOTATED_READ_TOOLS = annotate(READ_TOOLS)
+
+CAPABILITIES = {"tools": {"listChanged": False},
+                "prompts": {"listChanged": False},
+                "resources": {"subscribe": False, "listChanged": False}}
+
+INSTRUCTIONS = (
+    "This user's Marrow Health mirror: Apple Health metrics, meals, workouts, "
+    "strength sets, sleep, symptoms and mood, synced from their iPhone. Start "
+    "with daily_brief (today in the app's own terms, each value scored against "
+    "the user's own normal) or what_changed for a review. baselines says "
+    "whether a number is high or low for this person. data_quality says what "
+    "is missing or stale: check it before concluding something did not happen. "
+    "Reads take days back, or from and to on the phone's calendar. Health "
+    "metrics are in stored SI units and strength sets carry their unit. If the "
+    "user has turned on Allow AI write in the app you can also log and change "
+    "things when they ask: meals (log_meal, edit_entry, delete_entry), water, "
+    "weight, workouts (log_workout, log_strength), sleep, symptoms, mood and "
+    "daily targets. The phone applies each change and undo_entry takes it "
+    "back. Never log, change or remove anything the user did not ask for.")
+
+# Prompts: the questions people actually bring, as one click. Each says
+# which tools to call and how to speak (the user's own normal, neutral
+# wellness wording, missing data named rather than guessed).
+PROMPTS = [
+    {"name": "how_am_i_doing", "title": "How am I doing",
+     "description": "An honest read of today against the user's own normal, "
+                    "from daily_brief.",
+     "arguments": []},
+    {"name": "weekly_review", "title": "Weekly review",
+     "description": "The last seven days against the four weeks before: what "
+                    "moved, what held, one thing to try.",
+     "arguments": []},
+    {"name": "doctor_prep", "title": "Prepare for a doctor visit",
+     "description": "One page a clinician can read in a minute: 90 days of "
+                    "resting heart rate, HRV, weight, sleep, activity and "
+                    "symptoms with trends, and questions worth asking.",
+     "arguments": [{"name": "focus",
+                    "description": "What the visit is about, if known",
+                    "required": False}]},
+    {"name": "log_from_text", "title": "Log from text",
+     "description": "Turn a plain sentence about what the user ate, drank, "
+                    "lifted or weighed into the right log calls, then "
+                    "confirm what was logged.",
+     "arguments": [{"name": "text",
+                    "description": "What to log, in the user's words",
+                    "required": True}]},
+]
+
+PROMPT_TEXT = {
+    "how_am_i_doing": (
+        "Give me an honest read of how I am doing today.\n\n"
+        "Call daily_brief first. If anything in it is flagged, call baselines "
+        "for that metric to see the trend. Then answer in a few short lines: "
+        "what is normal for me today, what is above or below my normal, how "
+        "food and water stand against my targets, and one thing worth doing "
+        "with the rest of the day. Use the brief's own phrases (normal for "
+        "you, above your normal) rather than population ranges. Do not "
+        "diagnose or alarm. If a stream is stale or missing, say so plainly "
+        "instead of guessing."),
+    "weekly_review": (
+        "Review my last seven days.\n\n"
+        "Call what_changed (days 7, compare_days 28) and baselines. Then "
+        "write a short review in four parts: what moved and whether it is "
+        "notable for me, what held steady, what the training and food logs "
+        "show, and one specific thing to try next week. Quote the numbers "
+        "you lean on with their units. Prefer trends to single days. Neutral "
+        "wellness wording, no medical claims. If a stream started or stopped "
+        "arriving, mention it."),
+    "doctor_prep": (
+        "Help me prepare for a doctor visit{focus}.\n\n"
+        "Call data_quality, then baselines with window 90 for "
+        "resting_heart_rate, heart_rate_variability_s_d_n_n, body_mass, "
+        "sleep_hours, step_count and dietary_energy_consumed, then "
+        "symptoms_and_mood for 90 days and sleep_log for 30. Write one page "
+        "a clinician can read in a minute: a line per measure with the "
+        "90-day mean, the range and the trend, the symptoms logged with "
+        "dates and severity, the sleep pattern, and the activity level. Then "
+        "list three to five questions worth asking at the visit. State which "
+        "measures are missing or stale. Report, do not interpret clinically."),
+    "log_from_text": (
+        "Log this in Marrow: {text}\n\n"
+        "Work out what it is (food, water, weight, a workout, lifting sets, "
+        "sleep, a symptom or a mood) and call the matching log tool once per "
+        "item with sensible amounts. Use today and the current time unless "
+        "the text says otherwise. If a quantity is unclear, make a reasonable "
+        "estimate and say so. Afterwards, confirm in one line what was "
+        "logged. If write-back is turned off in the app, say how to turn it "
+        "on (Marrow, Export, Allow AI write)."),
+}
+
+# Resources: the context an AI should have before it is asked anything.
+RESOURCES = [
+    {"uri": "marrow://today", "name": "today", "title": "Today's brief",
+     "description": "daily_brief for the phone's today", "mimeType": "application/json"},
+    {"uri": "marrow://metrics", "name": "metrics", "title": "Health metrics",
+     "description": "list_metrics: every metric the mirror holds", "mimeType": "application/json"},
+    {"uri": "marrow://targets", "name": "targets", "title": "Daily targets",
+     "description": "The user's daily targets", "mimeType": "application/json"},
+    {"uri": "marrow://quality", "name": "quality", "title": "Data quality",
+     "description": "data_quality: what is fresh, stale or missing", "mimeType": "application/json"},
+]
+RESOURCE_TOOLS = {"marrow://today": "daily_brief", "marrow://metrics": "list_metrics",
+                  "marrow://targets": "targets", "marrow://quality": "data_quality"}
+
+
+class RpcError(Exception):
+    """A JSON-RPC error (not a tool result): an unknown prompt, resource
+    or argument."""
+    def __init__(self, code, message):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def get_prompt(name, args):
+    name = str(name or "")
+    spec = next((p for p in PROMPTS if p["name"] == name), None)
+    if not spec:
+        raise RpcError(-32602, f"unknown prompt: {name[:40]}")
+    args = args if isinstance(args, dict) else {}
+    fill = {}
+    for a in spec["arguments"]:
+        v = args.get(a["name"])
+        v = str(v).strip()[:2000] if v not in (None, "") else ""
+        if a["required"] and not v:
+            raise RpcError(-32602, f"{a['name']} is required")
+        fill[a["name"]] = v
+    if name == "doctor_prep":
+        fill["focus"] = f" about {fill['focus']}" if fill.get("focus") else ""
+    text = PROMPT_TEXT[name].format(**fill)
+    return {"description": spec["description"],
+            "messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
+
+
+def read_resource(mirror, uri):
+    tool = RESOURCE_TOOLS.get(str(uri or ""))
+    if not tool:
+        raise RpcError(-32002, f"unknown resource: {str(uri or '')[:60]}")
+    payload = call_tool(mirror, tool, {})
+    return {"contents": [{"uri": uri, "mimeType": "application/json",
+                          "text": json.dumps(payload, sort_keys=True)}]}
+
+
+def mcp_extra(mirror, method, params):
+    """prompts/* and resources/*, identical on both servers. None for a
+    method that is not one of them."""
+    params = params if isinstance(params, dict) else {}
+    if method == "prompts/list":
+        return {"prompts": PROMPTS}
+    if method == "prompts/get":
+        return get_prompt(params.get("name"), params.get("arguments"))
+    if method == "resources/list":
+        return {"resources": RESOURCES}
+    if method == "resources/templates/list":
+        return {"resourceTemplates": []}
+    if method == "resources/read":
+        return read_resource(mirror, params.get("uri"))
+    return None
+
+
+def tool_result(payload):
+    """A tools/call result: the JSON as text for every client, and the
+    same object as structuredContent for the clients that read it (the
+    tools with an outputSchema always answer with an object)."""
+    out = {"content": [{"type": "text",
+                        "text": json.dumps(payload, sort_keys=True)}],
+           "isError": False}
+    if isinstance(payload, dict):
+        out["structuredContent"] = payload
+    return out
 
 WB_DELIVERY = ("Sent to the phone. It appears in Marrow within seconds when "
                "the app is open or notifications are on, otherwise the next "
@@ -1663,7 +2037,7 @@ def _wb_entry(mirror, args):
     now = mirror.local_now()
     if day < (now - timedelta(days=WB_DAYS_BACK)).strftime("%Y-%m-%d"):
         raise ValueError(f"That entry is more than {WB_DAYS_BACK} days old. "
-                         "change it in the app.")
+                         "Change it in the app.")
     return entry_id, day
 
 
@@ -1958,11 +2332,555 @@ SUMMARY_KEYS = ["step_count", "active_energy_burned", "apple_exercise_time",
                 "body_mass", "dietary_energy_consumed"]
 
 
+# ---- the app's statistics, ported (Core/Derive.swift, derive.py) ----
+# A day is scored against its OWN trailing history, the day itself
+# excluded, so a value is always read against this person's normal and an
+# AI says about a day what the Home page says.
+
+def _shift(day, delta):
+    return (date.fromisoformat(day) + timedelta(days=delta)).isoformat()
+
+
+def rolling(series, window, min_n=5):
+    """{day: (mean, sd, n)} over the preceding `window` days."""
+    days = sorted(series)
+    out = {}
+    for i, d in enumerate(days):
+        lo = _shift(d, -window)
+        hist = [series[x] for x in days[:i] if x >= lo]
+        if len(hist) >= min_n:
+            sd = statistics.pstdev(hist) if len(hist) > 1 else 0.0
+            out[d] = (statistics.fmean(hist), sd, len(hist))
+    return out
+
+
+def zscores(series, window=60):
+    return {d: (series[d] - m) / sd
+            for d, (m, sd, _n) in rolling(series, window).items() if sd > 0}
+
+
+def trend_per_month(series, days_back=90):
+    """Least-squares slope over the last `days_back` days with data, per
+    month. None under 10 points."""
+    days = sorted(series)[-days_back:]
+    if len(days) < 10:
+        return None
+    x0 = date.fromisoformat(days[0])
+    xs = [(date.fromisoformat(d) - x0).days for d in days]
+    ys = [series[d] for d in days]
+    mx, my = statistics.fmean(xs), statistics.fmean(ys)
+    den = sum((x - mx) ** 2 for x in xs)
+    if not den:
+        return None
+    return sum((x - mx) * (y - my) for x, y in zip(xs, ys)) / den * 30
+
+
+def z_context(z):
+    """The app's words for a z (Display.zContext)."""
+    if z is None:
+        return "building your baseline"
+    if z < -1.5:
+        return "well below your normal"
+    if z < -0.7:
+        return "below your normal"
+    if z > 1.5:
+        return "well above your normal"
+    if z > 0.7:
+        return "above your normal"
+    return "normal for you"
+
+
+def _r(v, nd=1):
+    return None if v is None else round(v, nd)
+
+
+def _direction(trend, sd, mean):
+    """A slope smaller than half the day-to-day spread (or 1% of the
+    level when the spread is zero) is flat, not a trend."""
+    if trend is None:
+        return "unknown"
+    noise = sd * 0.5 if sd else abs(mean or 0) * 0.01
+    if abs(trend) <= noise:
+        return "flat"
+    return "up" if trend > 0 else "down"
+
+
+# The metrics the model-ready reads cover by default, with the plain
+# name an AI should use. sleep_hours is the night rule, not a record type.
+BRIEF_KEYS = [
+    ("step_count", "steps"),
+    ("active_energy_burned", "active calories"),
+    ("apple_exercise_time", "exercise minutes"),
+    ("resting_heart_rate", "resting heart rate"),
+    ("heart_rate_variability_s_d_n_n", "heart rate variability"),
+    ("body_mass", "body weight"),
+    ("dietary_energy_consumed", "calories eaten"),
+    ("dietary_protein", "protein eaten"),
+    ("dietary_water", "water"),
+    ("sleep_hours", "hours asleep"),
+]
+BRIEF_NAMES = dict(BRIEF_KEYS)
+
+
+def _plain(key):
+    return BRIEF_NAMES.get(key) or key.replace("_", " ")
+
+
+HOW_TO_READ = ("z is how far a value sits from this user's own trailing "
+               "window, in standard deviations of their day-to-day spread, "
+               "the day itself excluded. The phrases are the app's: beyond "
+               "0.7 is above or below their normal, beyond 1.5 well above or "
+               "well below. direction compares the 90-day slope with that "
+               "spread. None means too little history yet.")
+
+
+def parse_day(s, key="day"):
+    s = str(s or "")
+    if not re.match(r"^\d{4}-\d{2}-\d{2}$", s):
+        raise ValueError(f"{key} must be a date like 2026-10-22")
+    try:
+        return date.fromisoformat(s).isoformat()
+    except ValueError:
+        raise ValueError(f"{key} is not a real date")
+
+
+def day_arg(mirror, args, key="day"):
+    v = args.get(key)
+    if v in (None, ""):
+        return mirror.today()
+    day = parse_day(v, key)
+    if day > mirror.today():
+        raise ValueError(f"{key} is in the future on the phone's calendar")
+    return day
+
+
+def clamp_int(args, key, default, lo, hi):
+    try:
+        v = int(args.get(key, default))
+    except (TypeError, ValueError):
+        v = default
+    return max(lo, min(v, hi))
+
+
+def metric_series(mirror, key, floor, ceil):
+    """{day: value} over floor..ceil, or None when the mirror has never
+    seen that metric. sleep_hours is a night per wake day."""
+    if key == "sleep_hours":
+        if not mirror.resolve("sleep_analysis"):
+            return None
+        return {n["night"]: n["asleep_hours"]
+                for n in mirror.sleep(0, floor=floor, ceil=ceil)}
+    t = mirror.resolve(key)
+    if not t:
+        return None
+    return {d: v for d, v in mirror.daily(t, 0, floor=floor, ceil=ceil)}
+
+
+def metric_unit(mirror, key):
+    if key == "sleep_hours":
+        return "h"
+    t = mirror.resolve(key)
+    if not t:
+        return ""
+    row = mirror.conn.execute(
+        "SELECT unit FROM records WHERE type=? AND unit IS NOT NULL "
+        "AND unit!='' LIMIT 1", (t,)).fetchone()
+    return row[0] if row else ""
+
+
+def baseline_of(mirror, key, series, day, window):
+    days = sorted(series)
+    latest = days[-1]
+    base = rolling(series, window).get(latest)
+    z = (series[latest] - base[0]) / base[1] if base and base[1] > 0 else None
+    recent = [series[d] for d in days if d > _shift(latest, -7)]
+    trend = trend_per_month({d: series[d] for d in days if d > _shift(day, -90)})
+    return {"key": key, "name": BRIEF_NAMES.get(key, key.replace("_", " ")),
+            "unit": metric_unit(mirror, key),
+            "latest_day": latest, "latest": _r(series[latest], 2),
+            "days_ago": (date.fromisoformat(day) - date.fromisoformat(latest)).days,
+            "baseline": ({"mean": _r(base[0], 2), "sd": _r(base[1], 2), "n": base[2]}
+                         if base else None),
+            "z": _r(z, 2), "context": z_context(z),
+            "mean_7": _r(statistics.fmean(recent), 2),
+            "trend_per_month": _r(trend, 2),
+            "direction": _direction(trend, base[1] if base else 0,
+                                    base[0] if base else series[latest])}
+
+
+def baselines(mirror, args):
+    day = day_arg(mirror, args)
+    window = clamp_int(args, "window", 60, 7, 90)
+    keys = args.get("metrics")
+    if keys in (None, "", []):
+        keys = [k for k, _ in BRIEF_KEYS]
+    if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+        raise ValueError("metrics must be a list of metric keys (see list_metrics)")
+    floor = _shift(day, -max(window, 90) - 1)
+    out, missing = [], []
+    for key in keys[:40]:
+        series = metric_series(mirror, key, floor, day)
+        if not series:
+            missing.append(key)
+            continue
+        out.append(baseline_of(mirror, key, series, day, window))
+    return {"day": day, "window_days": window, "metrics": out,
+            "missing": missing, "how_to_read": HOW_TO_READ}
+
+
+def _bed_minutes(stamp):
+    """Bedtime as minutes after 18:00, so a night that starts after
+    midnight averages with one that starts before it."""
+    h, m = int(stamp[11:13]), int(stamp[14:16])
+    return (h * 60 + m - 18 * 60) % 1440
+
+
+def _per_week(n, days):
+    return _r(n * 7 / days, 1) if days else None
+
+
+def what_changed(mirror, args):
+    day = day_arg(mirror, args)
+    days = clamp_int(args, "days", 7, 1, 30)
+    compare = clamp_int(args, "compare_days", 28, 7, 90)
+    r_from, r_to = _shift(day, -(days - 1)), day
+    p_from, p_to = _shift(r_from, -compare), _shift(r_from, -1)
+    metrics, notable = [], []
+    for key, name in BRIEF_KEYS:
+        series = metric_series(mirror, key, p_from, r_to)
+        if not series:
+            continue
+        recent = [v for d, v in series.items() if d >= r_from]
+        prior = [v for d, v in series.items() if d < r_from]
+        unit = metric_unit(mirror, key)
+        e = {"key": key, "name": name, "unit": unit,
+             "recent_days": len(recent), "prior_days": len(prior)}
+        if len(recent) < 2 or len(prior) < 5:
+            e["change"] = "not enough data"
+            metrics.append(e)
+            continue
+        rm, pm = statistics.fmean(recent), statistics.fmean(prior)
+        sd = statistics.pstdev(prior)
+        delta = rm - pm
+        pct = delta / pm * 100 if pm else None
+        z = delta / sd if sd > 0 else None
+        if z is not None:
+            is_notable = abs(z) >= 0.7
+        else:
+            is_notable = delta != 0
+        direction = "flat" if (z is not None and abs(z) < 0.25) or delta == 0 \
+            else ("up" if delta > 0 else "down")
+        e.update({"recent_mean": _r(rm, 2), "prior_mean": _r(pm, 2),
+                  "change": _r(delta, 2), "change_pct": _r(pct, 1), "z": _r(z, 2),
+                  "direction": direction, "notable": is_notable})
+        metrics.append(e)
+        if is_notable:
+            u = f" {unit}" if unit and unit != "count" else ""
+            how = f"{abs(pct):.0f}%" if pct is not None else f"{abs(delta):g}{u}"
+            notable.append(f"{name.capitalize()} {direction} {how}: "
+                           f"{_r(rm, 1):g} vs {_r(pm, 1):g}{u} before")
+    metrics.sort(key=lambda e: (not e.get("notable"), -abs(e.get("z") or 0)))
+
+    def diary_days(lo, hi):
+        rows = mirror.conn.execute(
+            "SELECT day, SUM(kcal), SUM(protein) FROM diary WHERE day>=? AND day<=? "
+            "GROUP BY day", (lo, hi)).fetchall()
+        return {"days_logged": len(rows),
+                "kcal_per_logged_day": _r(statistics.fmean([r[1] or 0 for r in rows]))
+                if rows else None,
+                "protein_g_per_logged_day": _r(statistics.fmean([r[2] or 0 for r in rows]))
+                if rows else None}
+
+    def lifting(lo, hi, span):
+        sessions, sets, volume = mirror.conn.execute(
+            "SELECT COUNT(DISTINCT session_id), COUNT(*), "
+            "COALESCE(SUM(COALESCE(weight,0)*COALESCE(reps,0)),0) FROM strength_sets "
+            "WHERE kind!='warmup' AND day>=? AND day<=?", (lo, hi)).fetchone()
+        workouts = mirror.conn.execute(
+            "SELECT COUNT(*) FROM workouts WHERE day>=? AND day<=?", (lo, hi)).fetchone()[0]
+        return {"lifting_sessions_per_week": _per_week(sessions, span),
+                "working_sets_per_week": _per_week(sets, span),
+                "volume_per_week": _per_week(volume, span),
+                "workouts_per_week": _per_week(workouts, span)}
+
+    nights = mirror.sleep(0, floor=p_from, ceil=r_to)
+    rn = [n for n in nights if n["night"] >= r_from]
+    pn = [n for n in nights if n["night"] < r_from]
+    sleep = {"recent_nights": len(rn), "prior_nights": len(pn)}
+    if len(rn) >= 2 and len(pn) >= 5:
+        rh = statistics.fmean(n["asleep_hours"] for n in rn)
+        ph = statistics.fmean(n["asleep_hours"] for n in pn)
+        shift = (statistics.fmean(_bed_minutes(n["bedtime"]) for n in rn)
+                 - statistics.fmean(_bed_minutes(n["bedtime"]) for n in pn))
+        sleep.update({"recent_hours": _r(rh, 2), "prior_hours": _r(ph, 2),
+                      "change_hours": _r(rh - ph, 2),
+                      "bedtime_shift_min": round(shift)})
+        if abs(shift) >= 30:
+            notable.append(f"Bedtime is {abs(round(shift))} min "
+                           f"{'later' if shift > 0 else 'earlier'} than before")
+        if abs(rh - ph) >= 0.5:
+            notable.append(f"Sleep {'up' if rh > ph else 'down'} "
+                           f"{abs(rh - ph):.1f} h a night: {rh:.1f} vs {ph:.1f} h before")
+
+    new, stopped = [], []
+    for t, _u, _n, lo, hi in mirror.types():
+        key = short_key(t)
+        rec = mirror.conn.execute(
+            "SELECT COUNT(DISTINCT day) FROM records WHERE type=? AND day>=? AND day<=?",
+            (t, r_from, r_to)).fetchone()[0]
+        pri = mirror.conn.execute(
+            "SELECT COUNT(DISTINCT day) FROM records WHERE type=? AND day>=? AND day<=?",
+            (t, p_from, p_to)).fetchone()[0]
+        if rec and not pri and lo >= r_from:
+            new.append(key)
+        elif pri >= compare * 0.5 and not rec:
+            stopped.append(key)
+    for key in stopped[:5]:
+        notable.append(f"{key} stopped arriving (none in the last {days} days)")
+    return {"recent": {"from": r_from, "to": r_to, "days": days},
+            "prior": {"from": p_from, "to": p_to, "days": compare},
+            "metrics": metrics,
+            "food": {"recent": diary_days(r_from, r_to), "prior": diary_days(p_from, p_to)},
+            "training": {"recent": lifting(r_from, r_to, days),
+                         "prior": lifting(p_from, p_to, compare)},
+            "sleep": sleep, "streams": {"new": new, "stopped": stopped},
+            "notable": notable, "how_to_read": HOW_TO_READ}
+
+
+def stale_streams(mirror, today, floor60):
+    """Metrics that arrive most days but have not for three: the phone has
+    not synced, or the source stopped. Only these make an absence suspect."""
+    out = []
+    cutoff = _shift(today, -2)
+    for t, _u, _n, lo, hi in mirror.types():
+        if t == "HKCategoryTypeIdentifierSleepAnalysis" or hi >= cutoff:
+            continue
+        span = (date.fromisoformat(today) - date.fromisoformat(max(lo, floor60))).days + 1
+        cov = mirror.conn.execute(
+            "SELECT COUNT(DISTINCT day) FROM records WHERE type=? AND day>=?",
+            (t, floor60)).fetchone()[0]
+        if span >= 7 and cov >= 0.7 * span:
+            out.append((short_key(t), hi))
+    return out
+
+
+def data_quality(mirror, args):
+    days = clamp_int(args, "days", 14, 1, 90)
+    today = mirror.today()
+    floor = _shift(today, -(days - 1))
+    floor60 = _shift(today, -59)
+    stale = dict(stale_streams(mirror, today, floor60))
+    metrics, issues = [], []
+    for t, unit, n, lo, hi in mirror.types():
+        if t == "HKCategoryTypeIdentifierSleepAnalysis":
+            continue
+        key = short_key(t)
+        cov = mirror.conn.execute(
+            "SELECT COUNT(DISTINCT day) FROM records WHERE type=? AND day>=?",
+            (t, floor)).fetchone()[0]
+        cov60 = mirror.conn.execute(
+            "SELECT COUNT(DISTINCT day) FROM records WHERE type=? AND day>=?",
+            (t, floor60)).fetchone()[0]
+        span60 = (date.fromisoformat(today) - date.fromisoformat(max(lo, floor60))).days + 1
+        cadence = "daily" if span60 >= 7 and cov60 >= 0.7 * span60 else "occasional"
+        sources = [s for (s,) in mirror.conn.execute(
+            "SELECT source_name FROM records WHERE type=? AND day>=? "
+            "GROUP BY source_name ORDER BY COUNT(*) DESC LIMIT 3", (t, floor60))]
+        metrics.append({"key": key, "unit": unit or "", "first_day": lo, "latest_day": hi,
+                        "days_with_data": cov, "coverage_pct": round(cov * 100 / days),
+                        "cadence": cadence, "sources": sources,
+                        "stale": key in stale})
+        if key in stale:
+            issues.append(f"{_plain(key).capitalize()} has not synced since {hi}")
+        if len(sources) > 1 and any(h in t for h in SUM_HINTS):
+            issues.append(f"{key} comes from {len(sources)} sources, the richest "
+                          "source wins each day (no double counting)")
+    d_days, d_last, d_n = mirror.conn.execute(
+        "SELECT COUNT(DISTINCT day), MAX(day), COUNT(*) FROM diary WHERE day>=?",
+        (floor,)).fetchone()
+    d_last_any = mirror.conn.execute("SELECT MAX(day) FROM diary").fetchone()[0]
+    diary = {"days_logged": d_days, "entries": d_n, "latest_day": d_last or d_last_any,
+             "coverage_pct": round(d_days * 100 / days)}
+    if d_last_any and d_days < days * 0.5:
+        issues.append(f"Food was logged on {d_days} of the last {days} days: "
+                      "calorie and protein figures cover only those days")
+    nights = mirror.sleep(0, floor=floor, ceil=today)
+    last_night = mirror.conn.execute(
+        "SELECT MAX(day) FROM records WHERE type='HKCategoryTypeIdentifierSleepAnalysis'"
+    ).fetchone()[0]
+    sleep = {"nights": len(nights), "latest_night": nights[-1]["night"] if nights else None,
+             "latest_record_day": last_night, "coverage_pct": round(len(nights) * 100 / days)}
+    if last_night and not nights:
+        issues.append(f"No sleep in the last {days} nights (last recorded {last_night})")
+    if not last_night:
+        issues.append("Sleep is not synced to this mirror")
+    s_n, s_last = mirror.conn.execute(
+        "SELECT COUNT(DISTINCT session_id), MAX(day) FROM strength_sets WHERE day>=?",
+        (floor,)).fetchone()
+    s_last_any = mirror.conn.execute("SELECT MAX(day) FROM strength_sets").fetchone()[0]
+    w_n = mirror.conn.execute("SELECT COUNT(*) FROM workouts WHERE day>=?",
+                              (floor,)).fetchone()[0]
+    training = {"lifting_sessions": s_n, "latest_lifting_day": s_last or s_last_any,
+                "workouts": w_n}
+    dev = mirror.device()
+    st = mirror.status()
+    return {"today": today, "as_of": mirror.local_now().strftime("%Y-%m-%d %H:%M"),
+            "last_sync": st.get("last_ingest"), "window_days": days,
+            "records": st.get("records"), "first_day": st.get("first_day"),
+            "metrics": metrics, "diary": diary, "sleep": sleep, "training": training,
+            "write_back": {"enabled": bool(dev.get("write_enabled")),
+                           "kinds": dev.get("kinds") or [],
+                           "app_version": dev.get("app_version") or "",
+                           "timezone_offset_hours": (dev.get("tz_offset_seconds") or 0) / 3600},
+            "issues": issues}
+
+
+def daily_brief(mirror, args):
+    day = day_arg(mirror, args)
+    today = mirror.today()
+    window = clamp_int(args, "window", 60, 7, 90)
+    floor = _shift(day, -window - 1)
+    dev = mirror.device()
+    targets = dev.get("targets") or {}
+    metrics, flags, value = [], [], {}
+    for key, name in BRIEF_KEYS:
+        if key == "sleep_hours":
+            continue
+        series = metric_series(mirror, key, floor, day)
+        if series is None:
+            continue
+        unit = metric_unit(mirror, key)
+        v = series.get(day)
+        e = {"key": key, "name": name, "unit": unit, "value": _r(v, 2)}
+        if v is None:
+            latest = max(series) if series else None
+            if latest:
+                e.update({"latest_day": latest, "latest": _r(series[latest], 2)})
+            e["context"] = "nothing for this day"
+        else:
+            base = rolling(series, window).get(day)
+            z = (v - base[0]) / base[1] if base and base[1] > 0 else None
+            e.update({"z": _r(z, 2), "context": z_context(z),
+                      "usual": _r(base[0], 2) if base else None})
+            if z is not None and abs(z) > 1.5:
+                u = f" {unit}" if unit and unit != "count" else ""
+                flags.append(f"{name.capitalize()}: {z_context(z)} "
+                             f"({_r(v, 1):g} vs a usual {_r(base[0], 1):g}{u})")
+        value[key] = v
+        metrics.append(e)
+
+    rows = mirror.conn.execute(
+        "SELECT meal, name, kcal, protein, carbs, fat FROM diary WHERE day=? "
+        "ORDER BY logged_at", (day,)).fetchall()
+    meals = []
+    for meal, _n, _k, _p, _c, _f in rows:
+        if meal and meal not in meals:
+            meals.append(meal)
+    food = {"entries": len(rows),
+            "kcal": _r(sum(r[2] or 0 for r in rows)) if rows else None,
+            "protein_g": _r(sum(r[3] or 0 for r in rows)) if rows else None,
+            "carbs_g": _r(sum(r[4] or 0 for r in rows)) if rows else None,
+            "fat_g": _r(sum(r[5] or 0 for r in rows)) if rows else None,
+            "meals": meals, "source": "diary" if rows else None}
+    if not rows and value.get("dietary_energy_consumed") is not None:
+        food.update({"kcal": _r(value["dietary_energy_consumed"]),
+                     "protein_g": _r(value.get("dietary_protein")),
+                     "source": "apple_health"})
+    if food["kcal"] is None:
+        if day == today:
+            if mirror.local_now().hour >= 11:
+                flags.append("No food logged yet today")
+        else:
+            flags.append("No food was logged that day")
+
+    water_ml = value.get("dietary_water")
+    water = {"ml": _r(water_ml)}
+    if targets.get("water_ml"):
+        water["target_ml"] = targets["water_ml"]
+        water["remaining_ml"] = _r(max(targets["water_ml"] - (water_ml or 0), 0))
+
+    night = mirror.sleep(0, floor=day, ceil=day)
+    sleep = None
+    if night:
+        n = night[0]
+        series = metric_series(mirror, "sleep_hours", floor, day) or {}
+        base = rolling(series, window).get(day)
+        z = (n["asleep_hours"] - base[0]) / base[1] if base and base[1] > 0 else None
+        sleep = {**n, "z": _r(z, 2), "context": z_context(z),
+                 "usual_hours": _r(base[0], 2) if base else None}
+        if z is not None and abs(z) > 1.5:
+            flags.append(f"Sleep: {z_context(z)} ({n['asleep_hours']:.1f} h "
+                         f"vs a usual {base[0]:.1f} h)")
+    elif mirror.resolve("sleep_analysis"):
+        flags.append(f"No sleep recorded for the night ending {day}")
+
+    lifts = [{"session": name or "Workout", "sets": sets,
+              "working_sets": work, "volume": _r(vol)}
+             for name, sets, work, vol in mirror.conn.execute(
+                 "SELECT session_name, COUNT(*), "
+                 "SUM(CASE WHEN kind!='warmup' THEN 1 ELSE 0 END), "
+                 "SUM(CASE WHEN kind!='warmup' THEN COALESCE(weight,0)*COALESCE(reps,0) "
+                 "ELSE 0 END) FROM strength_sets WHERE day=? GROUP BY session_id "
+                 "ORDER BY MIN(done_at)", (day,))]
+    workouts = [{"activity": a.replace("HKWorkoutActivityType", ""),
+                 "start": s[:16], "duration": d, "unit": u}
+                for a, s, _e, d, u, _src in mirror.workouts(0, floor=day, ceil=day)]
+    training = {"lifting": lifts, "workouts": workouts,
+                "rest_day": not lifts and not workouts}
+
+    sm = mirror.symptoms_and_mood(0, floor=day, ceil=day)
+    moods = [e for e in sm["entries"] if e["kind"] != "symptom"]
+    symptoms = [e for e in sm["entries"] if e["kind"] == "symptom"]
+    mood = {"entries": len(moods),
+            "latest_feeling": moods[-1]["feeling"] if moods else None,
+            "symptoms": [f"{e['name']} ({e['severity']})" for e in symptoms]}
+    if symptoms:
+        flags.append("Symptoms logged: " + ", ".join(mood["symptoms"][:4]))
+
+    progress = None
+    if targets:
+        so_far = {"kcal": food["kcal"], "protein_g": food["protein_g"],
+                  "carbs_g": food["carbs_g"], "fat_g": food["fat_g"],
+                  "water_ml": water_ml, "steps": value.get("step_count"),
+                  "exercise_minutes": value.get("apple_exercise_time"),
+                  "sleep_hours": sleep["asleep_hours"] if sleep else None}
+        progress = {}
+        for k, t in targets.items():
+            if k in so_far and isinstance(t, (int, float)):
+                v = so_far[k]
+                progress[k] = {"target": t, "so_far": _r(v),
+                               "remaining": _r(max(t - v, 0)) if v is not None else t,
+                               "pct": round(v * 100 / t) if v is not None and t else None}
+    stale = stale_streams(mirror, today, _shift(today, -59))
+    for key, last in stale[:3]:
+        flags.append(f"{_plain(key).capitalize()} has not synced since {last}")
+    st = mirror.status()
+    return {"day": day, "is_today": day == today,
+            "as_of": mirror.local_now().strftime("%Y-%m-%d %H:%M") + " phone time",
+            "metrics": metrics, "food": food, "water": water, "sleep": sleep,
+            "training": training, "mood": mood,
+            "targets": ({"mode": targets.get("mode"), "progress": progress}
+                        if targets else None),
+            "flags": flags,
+            "data": {"last_sync": st.get("last_ingest"),
+                     "stale": [k for k, _ in stale],
+                     "scored_against_days": window},
+            "how_to_read": HOW_TO_READ}
+
+
 def call_tool(mirror, name, args, client=None, on_queued=None):
     if name in WRITE_TOOL_NAMES or name == "pending_entries":
         return call_write_tool(mirror, name, args, client, on_queued)
     if name == "targets":
         return read_targets(mirror)
+    if name == "daily_brief":
+        return daily_brief(mirror, args)
+    if name == "baselines":
+        return baselines(mirror, args)
+    if name == "what_changed":
+        return what_changed(mirror, args)
+    if name == "data_quality":
+        return data_quality(mirror, args)
 
     def clamp(key, default, cap):
         try:
@@ -1971,27 +2889,42 @@ def call_tool(mirror, name, args, client=None, on_queued=None):
             v = default
         return max(1, min(v, cap))
 
+    def window(default, cap):
+        """(days, floor, ceil): from..to when given, else days back."""
+        lo, hi = args.get("from"), args.get("to")
+        if lo in (None, "") and hi in (None, ""):
+            return clamp("days", default, cap), None, None
+        hi = parse_day(hi, "to") if hi not in (None, "") else mirror.today()
+        lo = parse_day(lo, "from") if lo not in (None, "") else _shift(hi, -default)
+        if lo > hi:
+            raise ValueError("from must not be after to")
+        if (date.fromisoformat(hi) - date.fromisoformat(lo)).days > cap:
+            raise ValueError(f"from and to may be at most {cap} days apart")
+        return cap, lo, hi
+
     if name == "list_metrics":
         return [{"key": short_key(t), "unit": u or "", "records": n,
                  "first_day": lo, "latest_day": hi}
                 for t, u, n, lo, hi in mirror.types()]
     if name == "health_summary":
-        days = clamp("days", 3, 30)
+        days, lo, hi = window(3, 30)
         out = {}
         for key in SUMMARY_KEYS:
             t = mirror.resolve(key)
             if t:
-                series = mirror.daily(t, days)
+                series = mirror.daily(t, days, floor=lo, ceil=hi)
                 if series:
                     out[key] = {d: round(v, 2) for d, v in series}
-        nights = mirror.sleep(days)
+        nights = mirror.sleep(days, floor=lo, ceil=hi)
         if nights:
             out["sleep_hours"] = {n["night"]: n["asleep_hours"] for n in nights}
         return out
     if name == "sleep_log":
-        return mirror.sleep(clamp("days", 7, 90))
+        days, lo, hi = window(7, 90)
+        return mirror.sleep(days, floor=lo, ceil=hi)
     if name == "symptoms_and_mood":
-        return mirror.symptoms_and_mood(clamp("days", 30, 400))
+        days, lo, hi = window(30, 400)
+        return mirror.symptoms_and_mood(days, floor=lo, ceil=hi)
     if name in ("metric_daily", "metric_samples"):
         if args.get("metric") in (None, ""):
             raise ValueError("metric is required: pass a key from list_metrics")
@@ -2000,21 +2933,29 @@ def call_tool(mirror, name, args, client=None, on_queued=None):
             raise ValueError(f"unknown metric: {args.get('metric')} "
                              "(see list_metrics)")
         if name == "metric_daily":
+            days, lo, hi = window(30, 400)
             return {"metric": short_key(t),
                     "days": {d: round(v, 3)
-                             for d, v in mirror.daily(t, clamp("days", 30, 400))}}
-        rows = mirror.samples(t, clamp("days", 7, 400), clamp("limit", 200, 1000))
+                             for d, v in mirror.daily(t, days, floor=lo, ceil=hi)}}
+        days, lo, hi = window(7, 400)
+        before = args.get("before")
+        before = str(before)[:40] if before not in (None, "") else None
+        rows = mirror.samples(t, days, clamp("limit", 200, 1000),
+                              floor=lo, ceil=hi, before=before)
         return [{"start": s, "end": e,
                  "value": num if num is not None else v, "source": src}
                 for s, e, v, num, src in rows]
     if name == "workouts":
+        days, lo, hi = window(30, 400)
         return [{"activity": a, "start": s, "end": e, "duration": d,
                  "unit": u, "source": src}
-                for a, s, e, d, u, src in mirror.workouts(clamp("days", 30, 400))]
+                for a, s, e, d, u, src in mirror.workouts(days, floor=lo, ceil=hi)]
     if name == "nutrition_log":
-        return mirror.nutrition(clamp("days", 7, 90))
+        days, lo, hi = window(7, 90)
+        return mirror.nutrition(days, floor=lo, ceil=hi)
     if name == "strength_log":
-        return mirror.strength(clamp("days", 90, 400))
+        days, lo, hi = window(90, 400)
+        return mirror.strength(days, floor=lo, ceil=hi)
     raise ValueError(f"unknown tool: {name}")
 
 
@@ -2167,10 +3108,11 @@ def make_handler(mirror, app_token, mcp_token, pairing):
             try:
                 if method == "initialize":
                     result = {"protocolVersion": PROTOCOL_VERSION,
-                              "capabilities": {"tools": {}},
+                              "capabilities": CAPABILITIES,
                               "serverInfo": {"name": "marrow-selfhost",
                                              "title": "Marrow Health (self-hosted)",
-                                             "version": __version__}}
+                                             "version": __version__},
+                              "instructions": INSTRUCTIONS}
                 elif method == "ping":
                     result = {}
                 elif method == "tools/list":
@@ -2179,20 +3121,25 @@ def make_handler(mirror, app_token, mcp_token, pairing):
                     # self-hosted server lists what actually works.
                     with lock:
                         writes = bool(mirror.device().get("write_enabled"))
-                    result = {"tools": TOOLS if writes else READ_TOOLS}
+                    result = {"tools": ANNOTATED_TOOLS if writes else ANNOTATED_READ_TOOLS}
                 elif method == "tools/call":
+                    if not isinstance(params, dict):
+                        raise ValueError("params must be an object")
                     with lock:
                         payload = call_tool(mirror, params.get("name", ""),
                                             params.get("arguments") or {},
                                             client="Your AI")
-                    result = {"content": [{"type": "text",
-                                           "text": json.dumps(payload,
-                                                              sort_keys=True)}],
-                              "isError": False}
+                    result = tool_result(payload)
                 else:
-                    return self._json(200, {"jsonrpc": "2.0", "id": rid,
-                                            "error": {"code": -32601,
-                                                      "message": f"no {method}"}})
+                    with lock:
+                        result = mcp_extra(mirror, method, params)
+                    if result is None:
+                        return self._json(200, {"jsonrpc": "2.0", "id": rid,
+                                                "error": {"code": -32601,
+                                                          "message": f"no {method}"}})
+            except RpcError as e:
+                return self._json(200, {"jsonrpc": "2.0", "id": rid,
+                                        "error": {"code": e.code, "message": e.message}})
             except Exception as e:
                 # A tool's own ValueError is written for the AI. Anything
                 # else stays generic (no paths or internals on the wire).

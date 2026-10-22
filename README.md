@@ -99,11 +99,25 @@ curl -s http://<server-ip>:8800/mcp \
 
 ## Tools
 
-Nine tools, all of them reads. The server also carries write tools (log a
+Thirteen tools, all of them reads. The server also carries write tools (log a
 meal, a workout and so on), but it lists them only after a phone registers it
 for write-back, and today only Marrow Connect does that. A self-hosted server
-paired from the app serves the nine reads and nothing an agent can call
+paired from the app serves the thirteen reads and nothing an agent can call
 writes to your health record.
+
+Four of them answer in the app's own terms, scored against your own trailing
+normal with the same math the app's Home page uses (the day itself excluded),
+so an agent starts from a read that is already true for you instead of
+judging a number against the population:
+
+| Tool | Returns |
+|---|---|
+| `daily_brief` | One day: each key metric with its value and a phrase (normal for you, above your normal, well below your normal), food and water against your targets, last night's sleep, training done, mood and symptoms, and flags worth mentioning |
+| `baselines` | Your own normal per metric: mean and spread over the window, the latest value's z and phrase, the 7-day mean and the 90-day trend per month |
+| `what_changed` | The recent days against the period before them: what moved and how notable it is for you, food, training, sleep and bedtime shifts, and streams that started or stopped arriving |
+| `data_quality` | What the mirror holds and how fresh it is: per metric the latest day, coverage, cadence, sources and whether it has gone stale, plus diary, sleep and training coverage and when the phone last synced |
+
+The nine raw reads:
 
 | Tool | Returns |
 |---|---|
@@ -116,6 +130,16 @@ writes to your health record.
 | `strength_log` | Every lifting set with its set type and estimated 1RM, per-exercise progression, and volume per muscle group (warm-ups left out) |
 | `sleep_log` | One night per wake day: bedtime, wake time, hours asleep, minutes per stage |
 | `symptoms_and_mood` | Symptoms with their severity, and State of Mind entries with valence, feelings and what they were about |
+
+Every read takes `days` back from the phone's today, or `from` and `to` on
+the phone's calendar. `metric_samples` pages with `before` (the start of the
+last record you have). Tools with an output schema also answer with
+`structuredContent`.
+
+Four prompts come with the server (`how_am_i_doing`, `weekly_review`,
+`doctor_prep`, `log_from_text`) and four resources (`marrow://today`,
+`marrow://metrics`, `marrow://targets`, `marrow://quality`), for the clients
+that show them.
 
 Metric keys: `list_metrics` shows Apple's short names (`active_energy_burned`),
 and the tools also accept the app's own keys (`active_energy`,
@@ -150,7 +174,7 @@ to give agents access:
 
 1. **Local MCP.** Marrow runs an MCP server on the iPhone itself at
    `http://<phone-ip>:21212/mcp`, answering while the app is running. Seven of
-   the nine tools above, zero extra hardware.
+   the raw reads above, zero extra hardware.
 2. **Server MCP.** This package: an always-on mirror on your own box.
 3. **Automated.** Scheduled pushes to any URL (Home Assistant, n8n, your own
    endpoint).
