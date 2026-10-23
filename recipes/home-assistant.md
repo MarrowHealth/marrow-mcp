@@ -48,8 +48,10 @@ Notes:
 - `data | last` is the newest day in the window (latest wins). The
   `if m else states(...)` keeps the old value when a payload lacks that
   metric.
-- `local_only: false` is needed when the phone posts over the internet to
-  your own address. Drop it on the LAN or with a Nabu Casa cloud webhook.
+- `local_only: false` is needed when the phone posts over the internet, to
+  your own address or to a Nabu Casa cloud webhook (Home Assistant counts
+  cloud webhooks as remote too). Drop it only when the phone and Home
+  Assistant share the same network.
 - Copy a block and change the metric name for anything else Marrow sends
   (`resting_heart_rate`, `active_energy`, `dietary_water` and so on).
 - Reload under Developer tools, YAML, Template entities. Then in Marrow tap
