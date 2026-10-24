@@ -33,3 +33,8 @@ Full reference: <https://marrowhealthapp.com/automations>.
 Three rules keep any receiver robust: answer 2xx fast and do the work after,
 archive the raw body before parsing it, and treat every delivery as
 latest-wins.
+
+For a finished project on top of the InfluxDB recipe (every automation kind,
+Grafana dashboard, Docker Compose, demo data), see
+[Body Ops](https://github.com/MarrowHealth/built-with-marrow/tree/main/projects/body-ops)
+in Built with Marrow.

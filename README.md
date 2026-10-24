@@ -156,6 +156,10 @@ training in the mornings?"* and let it go and look.
 - [recipes/](recipes/): receivers for Marrow's Automations (the app POSTs
   your data to any URL on a schedule, with the app closed): Home Assistant,
   n8n, Google Sheets through Apps Script, InfluxDB.
+- [Built with Marrow](https://github.com/MarrowHealth/built-with-marrow):
+  complete projects people run on these connections, starting with Body
+  Ops, a Grafana dashboard for every kind of data Marrow sends. Submit
+  yours there.
 - The Claude Code plugin: `/plugin marketplace add MarrowHealth/marrow-mcp`
   then `/plugin install marrow-health@marrow`. It adds the Marrow Connect
   server and four commands (`/marrow-health:how-am-i-doing`, `weekly-review`,
