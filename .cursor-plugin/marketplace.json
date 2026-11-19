@@ -1,0 +1,18 @@
+{
+  "name": "marrow",
+  "owner": {
+    "name": "Marrow Health LLC",
+    "email": "support@marrowhealthapp.com"
+  },
+  "metadata": {
+    "description": "Marrow Health plugins: your Apple Health data in your editor's agent",
+    "version": "0.4.0"
+  },
+  "plugins": [
+    {
+      "name": "marrow-health",
+      "source": "./plugins/marrow-health",
+      "description": "Apple Health data, meals, workouts and sleep from your self-hosted Marrow server, with daily brief, weekly review, doctor prep and log commands"
+    }
+  ]
+}

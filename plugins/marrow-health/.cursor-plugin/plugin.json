@@ -1,0 +1,15 @@
+{
+  "name": "marrow-health",
+  "displayName": "Marrow Health",
+  "version": "0.4.0",
+  "description": "Your own Apple Health data, meals, workouts, sleep and lifts in Cursor through your self-hosted Marrow server. Commands for a daily brief, a weekly review, doctor prep and logging by text.",
+  "author": {
+    "name": "Marrow Health LLC",
+    "email": "support@marrowhealthapp.com"
+  },
+  "homepage": "https://marrowhealthapp.com/mcp",
+  "repository": "https://github.com/MarrowHealth/marrow-mcp",
+  "license": "MIT",
+  "keywords": ["apple-health", "healthkit", "health", "fitness", "nutrition", "mcp", "marrow"],
+  "logo": "assets/logo.png"
+}

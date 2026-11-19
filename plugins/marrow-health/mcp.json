@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "marrow": {
+      "url": "${env:MARROW_MCP_URL}",
+      "headers": { "Authorization": "Bearer ${env:MARROW_MCP_TOKEN}" }
+    }
+  }
+}
